@@ -1,6 +1,6 @@
-import { CryptoShim } from "./crypto-shim.js";
-import { PASSWORD_MAP } from "./sa015_data.js";
-import { aesEncryptBlock } from "./aes.js";
+import { CryptoShim } from "./crypto-shim";
+import { PASSWORD_MAP } from "./sa015_data";
+import { aesEncryptBlock } from "./aes";
 
 /**
  * Valid prefix types for SA015 password blobs

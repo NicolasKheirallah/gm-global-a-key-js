@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Search } from "lucide-react";
-import { LogParser, type LogEntry } from "@gm-key/core";
+import { LogParser, type LogEntry } from "../core";
 
 interface LogParserViewProps {
   onSeedFound: (seed: string) => void;

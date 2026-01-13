@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { ArrowRight, Loader2 } from "lucide-react";
-import { SA015Engine, Utils } from "@gm-key/core";
+import { SA015Engine, Utils } from "../core";
 
 interface SA015ViewProps {
   sharedSeed: string;

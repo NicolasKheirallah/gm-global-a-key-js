@@ -6,7 +6,7 @@ import {
   table_gmlan,
   table_others,
   table_class2,
-} from "@gm-key/core";
+} from "../core";
 
 type TableType = "gmlan" | "others" | "class2";
 

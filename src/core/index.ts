@@ -1,7 +1,7 @@
 // Core algorithms
-export * from "./utils.js";
-export * from "./tables.js";
-export { GMLANEngine, GMLANError, GMLAN_OPCODES } from "./gmlan.js";
+export * from "./utils";
+export * from "./tables";
+export { GMLANEngine, GMLANError, GMLAN_OPCODES } from "./gmlan";
 export {
   SA015Engine,
   SA015Error,
@@ -9,12 +9,12 @@ export {
   type SA015Options,
   type SA015Result,
   type SA015ProgressCallback,
-} from "./sa015.js";
-export * from "./sa015_data.js";
+} from "./sa015";
+export * from "./sa015_data";
 
 // Cryptographic utilities
-export * from "./crypto-shim.js";
-export * from "./aes.js";
+export * from "./crypto-shim";
+export * from "./aes";
 
 // Log parsing
 export {
@@ -23,7 +23,7 @@ export {
   SECURITY_LEVELS,
   type LogEntry,
   type LogParserOptions,
-} from "./logPattern.js";
+} from "./logPattern";
 
 // UDS Protocol
-export * from "./uds.js";
+export * from "./uds";
