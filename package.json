@@ -10,8 +10,7 @@
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces",
     "dev": "npm run dev --workspace=@gm-key/web",
-    "lint": "eslint packages --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "build:desktop": "npm run build --workspace=@gm-key/web && npm run pack --workspace=@gm-key/electron"
+    "lint": "eslint packages --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
