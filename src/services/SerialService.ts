@@ -1,4 +1,4 @@
-/// <reference path="../types/web-serial.d.ts" />
+import { UDSMessage } from "../core/uds";
 
 // Type alias for the Web Serial API SerialPort
 type WebSerialPort = Awaited<ReturnType<typeof navigator.serial.requestPort>>;
@@ -11,6 +11,28 @@ export type ConnectionState =
   | "connecting"
   | "connected"
   | "error";
+
+/**
+ * ELM327 error types
+ */
+export type ELMError =
+  | "NO_DATA"
+  | "CAN_ERROR"
+  | "BUFFER_FULL"
+  | "BUS_BUSY"
+  | "BUS_ERROR"
+  | "UNKNOWN_COMMAND"
+  | "STOPPED";
+
+/**
+ * ELM327 response result
+ */
+export interface ELMResponse {
+  success: boolean;
+  data?: string;
+  error?: ELMError;
+  rawResponse: string;
+}
 
 /**
  * Serial command with metadata
@@ -63,8 +85,11 @@ export class SerialService {
   private _state: ConnectionState = "disconnected";
   private config: Required<SerialConfig>;
   private handlers: SerialEventHandlers = {};
+  private rawListeners: Set<(data: string) => void> = new Set();
   private readLoopActive = false;
   private reconnectAttempts = 0;
+  private currentTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: SerialConfig = {}) {
     this.config = {
@@ -74,6 +99,20 @@ export class SerialService {
       retryDelay: config.retryDelay ?? 500,
       debug: config.debug ?? false,
     };
+  }
+
+  /**
+   * Add a listener for raw RX data
+   */
+  addRawListener(callback: (data: string) => void): void {
+    this.rawListeners.add(callback);
+  }
+
+  /**
+   * Remove a listener for raw RX data
+   */
+  removeRawListener(callback: (data: string) => void): void {
+    this.rawListeners.delete(callback);
   }
 
   /**
@@ -143,6 +182,10 @@ export class SerialService {
           { usbVendorId: 0x10c4 }, // Silicon Labs
           { usbVendorId: 0x1a86 }, // CH340
           { usbVendorId: 0x067b }, // Prolific
+          { usbVendorId: 0x2341 }, // Arduino
+          { usbVendorId: 0x0557 }, // ATEN
+          { usbVendorId: 0x1d6b }, // Linux Foundation
+          { usbVendorId: 0x04d8 }, // Microchip (many OBD adapters)
         ],
       });
 
@@ -160,7 +203,6 @@ export class SerialService {
       this.reader = textDecoder.readable.getReader();
 
       const textEncoder = new TextEncoderStream();
-      // @ts-ignore
       textEncoder.readable.pipeTo(this.port.writable!).catch((e) => {
         this.log("Writable pipe error", e);
       });
@@ -184,6 +226,7 @@ export class SerialService {
    * Disconnect from the serial port
    */
   async disconnect(): Promise<void> {
+    this.stopHeartbeat();
     this.readLoopActive = false;
 
     // Clear pending commands
@@ -243,12 +286,10 @@ export class SerialService {
         await this.port.open({ baudRate: this.config.baudRate });
 
         const textDecoder = new TextDecoderStream();
-        // @ts-ignore
         this.port.readable!.pipeTo(textDecoder.writable);
         this.reader = textDecoder.readable.getReader();
 
         const textEncoder = new TextEncoderStream();
-        // @ts-ignore
         textEncoder.readable.pipeTo(this.port.writable!);
         this.writer = textEncoder.writable.getWriter();
 
@@ -282,6 +323,7 @@ export class SerialService {
         if (value) {
           this.buffer += value;
           this.handlers.onData?.(value);
+          this.rawListeners.forEach((l) => l(value));
 
           // Check for ELM327 prompt
           if (this.buffer.includes(">")) {
@@ -310,11 +352,48 @@ export class SerialService {
   }
 
   /**
+   * Parse ELM327 response for errors
+   */
+  private parseELMResponse(rawResponse: string): ELMResponse {
+    const response = rawResponse.trim();
+
+    if (response.includes("NO DATA")) {
+      return { success: false, error: "NO_DATA", rawResponse };
+    }
+    if (response.includes("CAN ERROR") || response.includes("FB ERROR")) {
+      return { success: false, error: "CAN_ERROR", rawResponse };
+    }
+    if (response.includes("BUFFER FULL")) {
+      return { success: false, error: "BUFFER_FULL", rawResponse };
+    }
+    if (response.includes("BUS BUSY")) {
+      return { success: false, error: "BUS_BUSY", rawResponse };
+    }
+    if (response.includes("BUS ERROR") || response.includes("LP ALERT")) {
+      return { success: false, error: "BUS_ERROR", rawResponse };
+    }
+    if (response === "?" || response.includes("?")) {
+      return { success: false, error: "UNKNOWN_COMMAND", rawResponse };
+    }
+    if (response.includes("STOPPED")) {
+      return { success: false, error: "STOPPED", rawResponse };
+    }
+
+    return { success: true, data: response, rawResponse };
+  }
+
+  /**
    * Process buffer when complete response received
    */
   private processBuffer(): void {
     const response = this.buffer.replace(">", "").trim();
     this.buffer = "";
+
+    // Clear timeout
+    if (this.currentTimeoutId) {
+      clearTimeout(this.currentTimeoutId);
+      this.currentTimeoutId = null;
+    }
 
     // Resolve the current command
     if (this.commandQueue.length > 0 && this.isProcessing) {
@@ -341,11 +420,12 @@ export class SerialService {
       this.log(`TX: ${cmd.command}`);
       await this.writer.write(cmd.command + "\r");
 
-      // Set timeout
-      setTimeout(() => {
+      // Set timeout with ID tracking
+      this.currentTimeoutId = setTimeout(() => {
         if (this.isProcessing && this.commandQueue[0] === cmd) {
           this.commandQueue.shift();
           this.isProcessing = false;
+          this.currentTimeoutId = null;
           cmd.reject(new Error(`Command timeout: ${cmd.command}`));
           this.processQueue();
         }
@@ -497,6 +577,82 @@ export class SerialService {
    */
   get queueLength(): number {
     return this.commandQueue.length;
+  }
+
+  /**
+   * Send command and parse ELM327 response
+   * @param command - AT or OBD command
+   * @returns Parsed ELM response
+   */
+  async sendAndParse(command: string): Promise<ELMResponse> {
+    const rawResponse = await this.send(command);
+    return this.parseELMResponse(rawResponse);
+  }
+
+  /**
+   * Start Tester Present heartbeat to keep session alive
+   * @param intervalMs - Heartbeat interval (default: 2000ms)
+   */
+  startHeartbeat(intervalMs: number = 2000): void {
+    this.stopHeartbeat();
+
+    this.heartbeatInterval = setInterval(async () => {
+      if (this._state !== "connected" || !this.writer) {
+        this.stopHeartbeat();
+        return;
+      }
+
+      try {
+        // 3E 80 = Tester Present with suppressPositiveResponse
+        await this.send("3E 80", 1000);
+        this.log("Heartbeat sent");
+      } catch (e) {
+        this.log("Heartbeat failed", e);
+        // Don't stop heartbeat on single failure
+      }
+    }, intervalMs);
+
+    this.log(`Heartbeat started (${intervalMs}ms interval)`);
+  }
+
+  /**
+   * Stop Tester Present heartbeat
+   */
+  stopHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+      this.log("Heartbeat stopped");
+    }
+  }
+
+  /**
+   * Check if heartbeat is active
+   */
+  get isHeartbeatActive(): boolean {
+    return this.heartbeatInterval !== null;
+  }
+
+  /**
+   * Send UDS Seed Request
+   * @param level - Security level
+   * @returns Seed bytes and raw response
+   */
+  async requestSeed(
+    level: number
+  ): Promise<{ seed: Uint8Array; response: ELMResponse }> {
+    const request = UDSMessage.buildSeedRequest(level);
+    const hexReq = UDSMessage.formatBytes(request).replace(/\s/g, "");
+    const response = await this.sendAndParse(hexReq);
+
+    if (!response.success || !response.data) {
+      throw new Error(`Seed request failed: ${response.error}`);
+    }
+
+    const respBytes = UDSMessage.parseHex(response.data);
+    const seed = UDSMessage.parseSecuritySeedResponse(respBytes, level);
+
+    return { seed, response };
   }
 
   /**

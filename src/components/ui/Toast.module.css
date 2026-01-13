@@ -1,0 +1,84 @@
+.toastContainer {
+  position: fixed;
+  bottom: 2rem;
+  right: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  z-index: 9999;
+}
+
+.toast {
+  background-color: var(--card-bg, #ffffff);
+  color: var(--text-color, #333333);
+  padding: 1rem;
+  border-radius: 6px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 300px;
+  max-width: 400px;
+  border-left: 4px solid transparent;
+  animation: slideIn 0.3s ease-out forwards;
+  position: relative;
+  overflow: hidden;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.toast.info {
+  border-left-color: #3b82f6;
+}
+
+.toast.success {
+  border-left-color: #22c55e;
+}
+
+.toast.warning {
+  border-left-color: #f59e0b;
+}
+
+.toast.error {
+  border-left-color: #ef4444;
+}
+
+.content {
+  flex: 1;
+  font-size: 0.9rem;
+}
+
+.closeButton {
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.5;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.closeButton:hover {
+  opacity: 1;
+  background-color: transparent;
+}
+
+/* Dark mode support - implicit via CSS variables if defined in global */
+@media (prefers-color-scheme: dark) {
+  .toast {
+    background-color: #1f2937;
+    color: #f3f4f6;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+  }
+}

@@ -1,9 +1,11 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Plug, Lock, Loader2, XCircle, CheckCircle2 } from "lucide-react";
+import styles from "./View.module.css";
 import { SerialService, type ConnectionState } from "../services/SerialService";
 
 interface HardwareViewProps {
   onSeedFound: (seed: string) => void;
+  serialService: SerialService;
 }
 
 /**
@@ -17,24 +19,26 @@ const formatHex = (val: string, maxBytes: number): string => {
 /**
  * Hardware view for direct ECU communication via Web Serial
  */
-export function HardwareView({ onSeedFound }: HardwareViewProps) {
+export function HardwareView({
+  onSeedFound,
+  serialService,
+}: HardwareViewProps) {
   const [logs, setLogs] = useState("");
-  const [connectionState, setConnectionState] =
-    useState<ConnectionState>("disconnected");
+  const [connectionState, setConnectionState] = useState<ConnectionState>(
+    serialService.state
+  );
   const [ecuHeader, setEcuHeader] = useState("7E0");
   const [keyToUnlock, setKeyToUnlock] = useState("");
   const [isScanning, setIsScanning] = useState(false);
-  const serialRef = useRef<SerialService | null>(null);
 
-  // Initialize serial service
+  const appendLog = useCallback((message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setLogs((prev) => `${prev}[${timestamp}] ${message}\n`);
+  }, []);
+
+  // Update handlers when component mounts
   useEffect(() => {
-    serialRef.current = new SerialService({
-      defaultTimeout: 5000,
-      maxRetries: 3,
-      debug: true,
-    });
-
-    serialRef.current.setHandlers({
+    serialService.setHandlers({
       onStateChange: (state) => {
         setConnectionState(state);
         appendLog(`Connection: ${state}`);
@@ -42,25 +46,22 @@ export function HardwareView({ onSeedFound }: HardwareViewProps) {
       onError: (error) => {
         appendLog(`ERROR: ${error.message}`);
       },
-      onData: (_data) => {
+      onData: () => {
         // Raw data logging (optional)
-        // appendLog(`RX: ${data}`);
       },
     });
 
-    return () => {
-      serialRef.current?.disconnect();
-    };
-  }, []);
+    // Set initial state
+    setConnectionState(serialService.state);
 
-  const appendLog = useCallback((message: string) => {
-    const timestamp = new Date().toLocaleTimeString();
-    setLogs((prev) => `${prev}[${timestamp}] ${message}\n`);
-  }, []);
+    return () => {
+      // Ideally we don't disconnect on unmount if we want to share connection.
+    };
+  }, [serialService, appendLog]);
 
   const handleConnect = async () => {
     try {
-      await serialRef.current?.connect();
+      await serialService.connect();
       appendLog("Connected to serial device");
     } catch (e) {
       appendLog(
@@ -70,12 +71,12 @@ export function HardwareView({ onSeedFound }: HardwareViewProps) {
   };
 
   const handleDisconnect = async () => {
-    await serialRef.current?.disconnect();
+    await serialService.disconnect();
     appendLog("Disconnected");
   };
 
   const handleScan = async () => {
-    if (!serialRef.current || connectionState !== "connected") {
+    if (!serialService.isConnected) {
       appendLog("Not connected");
       return;
     }
@@ -84,7 +85,7 @@ export function HardwareView({ onSeedFound }: HardwareViewProps) {
     appendLog("Sending GMLAN Seed Request...");
 
     try {
-      const result = await serialRef.current.executeSeedRequest(ecuHeader);
+      const result = await serialService.executeSeedRequest(ecuHeader);
       appendLog(result.log);
 
       // Parse seed from response
@@ -120,7 +121,7 @@ export function HardwareView({ onSeedFound }: HardwareViewProps) {
   };
 
   const handleUnlock = async () => {
-    if (!serialRef.current || connectionState !== "connected") {
+    if (!serialService.isConnected) {
       appendLog("Not connected");
       return;
     }
@@ -137,8 +138,8 @@ export function HardwareView({ onSeedFound }: HardwareViewProps) {
 
       const result =
         keyToUnlock.length === 10
-          ? await serialRef.current.sendKey5Byte(keyToUnlock)
-          : await serialRef.current.sendKey(keyToUnlock);
+          ? await serialService.sendKey5Byte(keyToUnlock)
+          : await serialService.sendKey(keyToUnlock);
 
       appendLog(result);
 
@@ -162,8 +163,8 @@ export function HardwareView({ onSeedFound }: HardwareViewProps) {
   const isConnected = connectionState === "connected";
 
   return (
-    <div className="view">
-      <div className="form-group">
+    <div className={styles.view}>
+      <div className={styles.formGroup}>
         <label>ELM327 / OBD-II Connection (Web Serial)</label>
         <p
           style={{
@@ -181,21 +182,21 @@ export function HardwareView({ onSeedFound }: HardwareViewProps) {
           {connectionState === "disconnected" ? (
             <button
               onClick={handleConnect}
-              className="action-btn"
+              className={styles.button}
               style={{ flex: 1 }}
             >
               <Plug size={20} />
               Connect USB/Serial
             </button>
           ) : connectionState === "connecting" ? (
-            <button className="action-btn" disabled style={{ flex: 1 }}>
+            <button className={styles.button} disabled style={{ flex: 1 }}>
               <Loader2 className="animate-spin" size={20} />
               Connecting...
             </button>
           ) : connectionState === "connected" ? (
             <button
               onClick={handleDisconnect}
-              className="action-btn"
+              className={styles.button}
               style={{ flex: 1, backgroundColor: "#ef4444" }}
             >
               <CheckCircle2 size={20} />
@@ -204,7 +205,7 @@ export function HardwareView({ onSeedFound }: HardwareViewProps) {
           ) : (
             <button
               onClick={handleConnect}
-              className="action-btn"
+              className={styles.button}
               style={{ flex: 1, backgroundColor: "#f59e0b" }}
             >
               <XCircle size={20} />
@@ -214,7 +215,7 @@ export function HardwareView({ onSeedFound }: HardwareViewProps) {
         </div>
       </div>
 
-      <div className="form-group">
+      <div className={styles.formGroup}>
         <label htmlFor="ecu-select">Target ECU:</label>
         <select
           id="ecu-select"
@@ -234,6 +235,7 @@ export function HardwareView({ onSeedFound }: HardwareViewProps) {
       <button
         onClick={handleScan}
         disabled={!isConnected || isScanning}
+        className={styles.button}
         style={{ marginBottom: "0" }}
       >
         {isScanning ? (
@@ -245,7 +247,7 @@ export function HardwareView({ onSeedFound }: HardwareViewProps) {
       </button>
 
       <div
-        className="form-group"
+        className={styles.formGroup}
         style={{
           marginTop: "1rem",
           borderTop: "1px solid var(--border-color)",
@@ -262,12 +264,13 @@ export function HardwareView({ onSeedFound }: HardwareViewProps) {
             maxLength={10}
             autoComplete="off"
             spellCheck={false}
+            style={{ flex: 1 }}
           />
           <button
             onClick={handleUnlock}
             disabled={!isConnected || !keyToUnlock}
-            className="action-btn"
-            style={{ minWidth: "100px" }}
+            className={styles.button}
+            style={{ marginTop: 0, width: "auto", minWidth: "100px" }}
           >
             <Lock size={16} />
             Unlock
@@ -275,7 +278,7 @@ export function HardwareView({ onSeedFound }: HardwareViewProps) {
         </div>
       </div>
 
-      <div className="result-area" style={{ marginTop: "1rem" }}>
+      <div className={styles.resultArea} style={{ marginTop: "1rem" }}>
         <label>Terminal Log:</label>
         <pre
           style={{

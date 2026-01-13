@@ -137,7 +137,6 @@ export class GMLANEngine {
   }
 
   static op_4c(val: number, hh: number, _ll: number): number {
-    // ll unused
     // Normalize shift to 0-15 range for 16-bit rotation
     const shift = hh & 0x0f;
     if (shift === 0) return val;
@@ -258,7 +257,10 @@ export class GMLANEngine {
     targetKey: number,
     table: Uint8Array,
     maxAlgorithms: number = 256
-  ): { algo: number | null; sequence: any[] | null } {
+  ): {
+    algo: number | null;
+    sequence: Array<{ op: number; hh: number; ll: number }> | null;
+  } {
     for (let algo = 1; algo < maxAlgorithms; algo++) {
       const idx = algo * 13;
       if (idx + 12 >= table.length) break;
@@ -278,7 +280,7 @@ export class GMLANEngine {
           }
           return { algo, sequence };
         }
-      } catch (e) {
+      } catch {
         continue;
       }
     }
@@ -295,7 +297,7 @@ export class GMLANEngine {
       try {
         const key = this.getKey(seed, algo, table);
         results.push({ algo, key });
-      } catch (e) {
+      } catch {
         continue;
       }
     }

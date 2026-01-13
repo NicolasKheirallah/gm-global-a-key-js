@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 import { ArrowRight, Loader2 } from "lucide-react";
+import styles from "./View.module.css";
+import { useSessionStorage } from "../hooks/useSessionStorage";
 import { SA015Engine, Utils } from "../core";
 
 interface SA015ViewProps {
@@ -18,8 +20,8 @@ const formatHex = (val: string, maxBytes: number): string => {
  * SA015 (5-byte) key calculator view
  */
 export function SA015View({ sharedSeed }: SA015ViewProps) {
-  const [seed, setSeed] = useState(sharedSeed);
-  const [algo, setAlgo] = useState("");
+  const [seed, setSeed] = useSessionStorage("sa015_seed", sharedSeed);
+  const [algo, setAlgo] = useSessionStorage("sa015_algo", "");
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -31,7 +33,7 @@ export function SA015View({ sharedSeed }: SA015ViewProps) {
   // Sync with shared seed from other views
   useEffect(() => {
     if (sharedSeed) setSeed(sharedSeed);
-  }, [sharedSeed]);
+  }, [sharedSeed, setSeed]);
 
   const handleSeedChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSeed(formatHex(e.target.value, 5));
@@ -48,37 +50,55 @@ export function SA015View({ sharedSeed }: SA015ViewProps) {
       setProgress(null);
       setLoading(true);
 
-      // Small delay to ensure UI updates
-      await new Promise((r) => setTimeout(r, 10));
-
       const seedBytes = Utils.normalizeSeed(seed, 5);
       const algoId = parseInt(algo, 16);
 
       if (isNaN(algoId)) throw new Error("Invalid Algorithm ID");
 
-      const res = await SA015Engine.deriveKey(algoId, seedBytes, {
-        onProgress: (current, total) => {
-          setProgress({ current, total });
-        },
-        progressInterval: 5,
+      // Use Web Worker for SA015 calculation
+      const worker = new Worker(new URL("../worker.ts", import.meta.url), {
+        type: "module",
       });
 
-      const hexKey = SA015Engine.formatKey(res);
+      worker.postMessage({
+        type: "SA015_CALCULATE",
+        algo: algoId,
+        seedBytes: seedBytes,
+      });
 
-      setResult(
-        `Key: ${hexKey}\nIterations: ${res.iterations}\nPrefix: ${res.prefix}`
-      );
+      worker.onmessage = (e: MessageEvent) => {
+        const { type, current, total, result, message } = e.data;
+
+        if (type === "SA015_PROGRESS") {
+          setProgress({ current, total });
+        } else if (type === "SA015_RESULT") {
+          const hexKey = SA015Engine.formatKey(result);
+          setResult(
+            `Key: ${hexKey}\nIterations: ${result.iterations}\nPrefix: ${result.prefix}`
+          );
+          setLoading(false);
+          worker.terminate();
+        } else if (type === "ERROR") {
+          setError(message ?? "Unknown error");
+          setLoading(false);
+          worker.terminate();
+        }
+      };
+
+      worker.onerror = (e) => {
+        setLoading(false);
+        setError(`Worker error: ${e.message}`);
+        worker.terminate();
+      };
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
       setLoading(false);
-      setProgress(null);
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
   return (
-    <div className="view">
-      <div className="form-group">
+    <div className={styles.view}>
+      <div className={styles.formGroup}>
         <label htmlFor="sa015-seed">Seed (5 bytes, hex):</label>
         <input
           id="sa015-seed"
@@ -91,7 +111,7 @@ export function SA015View({ sharedSeed }: SA015ViewProps) {
         />
       </div>
 
-      <div className="form-group">
+      <div className={styles.formGroup}>
         <label htmlFor="sa015-algo">Algorithm ID (hex):</label>
         <input
           id="sa015-algo"
@@ -104,7 +124,11 @@ export function SA015View({ sharedSeed }: SA015ViewProps) {
         />
       </div>
 
-      <button onClick={handleCalculate} disabled={loading || !seed || !algo}>
+      <button
+        onClick={handleCalculate}
+        disabled={loading || !seed || !algo}
+        className={styles.button}
+      >
         {loading ? (
           <Loader2 className="animate-spin" size={20} />
         ) : (
@@ -120,13 +144,13 @@ export function SA015View({ sharedSeed }: SA015ViewProps) {
       </button>
 
       {error && (
-        <div className="error" role="alert">
+        <div className={styles.error} role="alert">
           {error}
         </div>
       )}
 
       {result && (
-        <div className="result-area">
+        <div className={styles.resultArea}>
           <label>Result:</label>
           <pre>{result}</pre>
         </div>

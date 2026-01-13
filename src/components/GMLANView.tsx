@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 import { Search, Loader2 } from "lucide-react";
+import styles from "./View.module.css";
+import { useSessionStorage } from "../hooks/useSessionStorage";
 import {
   GMLANEngine,
   Utils,
@@ -9,11 +11,6 @@ import {
 } from "../core";
 
 type TableType = "gmlan" | "others" | "class2";
-
-interface BruteForceResult {
-  algo: number;
-  key: number;
-}
 
 interface GMLANViewProps {
   sharedSeed: string;
@@ -31,9 +28,12 @@ const formatHex = (val: string, maxBytes: number): string => {
  * GMLAN (Legacy 16-bit) key calculator view
  */
 export function GMLANView({ sharedSeed }: GMLANViewProps) {
-  const [seed, setSeed] = useState(sharedSeed);
-  const [algo, setAlgo] = useState("");
-  const [table, setTable] = useState<TableType>("gmlan");
+  const [seed, setSeed] = useSessionStorage("gmlan_seed", sharedSeed);
+  const [algo, setAlgo] = useSessionStorage("gmlan_algo", "");
+  const [table, setTable] = useSessionStorage<TableType>(
+    "gmlan_table",
+    "gmlan"
+  );
   const [isBrute, setIsBrute] = useState(false);
   const [result, setResult] = useState("");
   const [error, setError] = useState("");
@@ -42,7 +42,7 @@ export function GMLANView({ sharedSeed }: GMLANViewProps) {
   // Sync with shared seed from other views
   useEffect(() => {
     if (sharedSeed) setSeed(sharedSeed);
-  }, [sharedSeed]);
+  }, [sharedSeed, setSeed]);
 
   const handleSeedChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSeed(formatHex(e.target.value, 2));
@@ -68,35 +68,33 @@ export function GMLANView({ sharedSeed }: GMLANViewProps) {
           type: "module",
         });
 
-        worker.postMessage({ seedInt, table });
+        worker.postMessage({ type: "GMLAN_BRUTE_FORCE", seedInt, table });
 
         worker.onmessage = (e: MessageEvent) => {
           setLoading(false);
-          const { type, results, message } = e.data as {
-            type: string;
-            results?: BruteForceResult[];
-            message?: string;
-          };
+          const { type, results, message } = e.data;
 
-          if (type === "error") {
+          if (type === "ERROR") {
             setError(message ?? "Unknown error");
-          } else if (!results || results.length === 0) {
-            setResult("No keys found.");
-          } else {
-            setResult(
-              results
-                .map(
-                  (r) =>
-                    `Algo 0x${r.algo
-                      .toString(16)
-                      .toUpperCase()
-                      .padStart(2, "0")}: Key 0x${r.key
-                      .toString(16)
-                      .toUpperCase()
-                      .padStart(4, "0")}`
-                )
-                .join("\n")
-            );
+          } else if (type === "GMLAN_RESULT") {
+            if (!results || results.length === 0) {
+              setResult("No keys found.");
+            } else {
+              setResult(
+                results
+                  .map(
+                    (r: { algo: number; key: number }) =>
+                      `Algo 0x${r.algo
+                        .toString(16)
+                        .toUpperCase()
+                        .padStart(2, "0")}: Key 0x${r.key
+                        .toString(16)
+                        .toUpperCase()
+                        .padStart(4, "0")}`
+                  )
+                  .join("\n")
+              );
+            }
           }
           worker.terminate();
         };
@@ -124,8 +122,8 @@ export function GMLANView({ sharedSeed }: GMLANViewProps) {
   };
 
   return (
-    <div className="view">
-      <div className="form-group">
+    <div className={styles.view}>
+      <div className={styles.formGroup}>
         <label htmlFor="gmlan-seed">Seed (2 bytes, hex):</label>
         <input
           id="gmlan-seed"
@@ -138,7 +136,7 @@ export function GMLANView({ sharedSeed }: GMLANViewProps) {
         />
       </div>
 
-      <div className="form-group checkbox">
+      <div className={styles.checkbox}>
         <label>
           <input
             type="checkbox"
@@ -150,7 +148,7 @@ export function GMLANView({ sharedSeed }: GMLANViewProps) {
       </div>
 
       {!isBrute && (
-        <div className="form-group">
+        <div className={styles.formGroup}>
           <label htmlFor="gmlan-algo">Algorithm ID (hex):</label>
           <input
             id="gmlan-algo"
@@ -164,7 +162,7 @@ export function GMLANView({ sharedSeed }: GMLANViewProps) {
         </div>
       )}
 
-      <div className="form-group">
+      <div className={styles.formGroup}>
         <label htmlFor="gmlan-table">Table:</label>
         <select
           id="gmlan-table"
@@ -177,7 +175,11 @@ export function GMLANView({ sharedSeed }: GMLANViewProps) {
         </select>
       </div>
 
-      <button onClick={handleCalculate} disabled={loading || !seed}>
+      <button
+        onClick={handleCalculate}
+        disabled={loading || !seed}
+        className={styles.button}
+      >
         {loading ? (
           <Loader2 className="animate-spin" size={20} />
         ) : (
@@ -187,13 +189,13 @@ export function GMLANView({ sharedSeed }: GMLANViewProps) {
       </button>
 
       {error && (
-        <div className="error" role="alert">
+        <div className={styles.error} role="alert">
           {error}
         </div>
       )}
 
       {result && (
-        <div className="result-area">
+        <div className={styles.resultArea}>
           <label>Result:</label>
           <pre>{result}</pre>
         </div>

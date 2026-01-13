@@ -67,14 +67,9 @@ interface Serial extends EventTarget {
   ondisconnect: ((this: Serial, ev: SerialPortEvent) => void) | null;
 }
 
-interface Navigator {
-  readonly serial: Serial;
-}
+// Navigator interface removed to avoid conflict/unused var
 
-// Extend Window interface just in case
-interface Window {
-  readonly navigator: Navigator;
-}
+// Window interface removed as it is not used directly
 
 // For TypeScript module augmentation
 declare global {

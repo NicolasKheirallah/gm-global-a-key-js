@@ -112,7 +112,29 @@ export class LogParser {
       const canId = canIdMatch ? canIdMatch[1].toUpperCase() : undefined;
 
       // Normalize line for hex pattern matching
-      const hexLine = line.replace(/[^0-9A-Fa-f]/g, " ").trim();
+      let hexLine = line.replace(/[^0-9A-Fa-f]/g, " ").trim();
+
+      // Check for multi-line continuation (simple heuristic: previous line ended with typical byte, this line starts with bytes)
+      // For J2534 logs, sometimes frames are split.
+      // A more robust approach: Accumulate all hex content and try to find patterns in the stream,
+      // but that loses line numbers.
+      // For now, let's try to peek ahead if the current line looks like a partial frame. (Not easy).
+
+      // Alternative: Just join the whole file and run regex, but we want line numbers.
+      // Let's stick to single line processing for now as J2534 logs usually have one frame per line
+      // or explicit headers. If we see a very short line followed by another short line, maybe merge?
+
+      // Attempt to merge with next line if this line ends with a hex byte and next line starts with one
+      if (lineIdx < lines.length - 1) {
+        const nextLine = lines[lineIdx + 1];
+        // If next line has no timestamp and looks like hex data...
+        if (
+          !/\[\d+:\d+:\d+\]/.test(nextLine) &&
+          /^[0-9A-Fa-f\s]+$/.test(nextLine.trim())
+        ) {
+          hexLine += " " + nextLine.replace(/[^0-9A-Fa-f]/g, " ").trim();
+        }
+      }
 
       // Try to match different seed patterns
 

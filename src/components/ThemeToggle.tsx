@@ -1,4 +1,5 @@
 import { Sun, Moon } from "lucide-react";
+import styles from "../App.module.css";
 
 interface ThemeToggleProps {
   isDarkMode: boolean;
@@ -11,7 +12,9 @@ interface ThemeToggleProps {
 export function ThemeToggle({ isDarkMode, onToggle }: ThemeToggleProps) {
   return (
     <div
-      className={`theme-toggle ${isDarkMode ? "dark" : ""}`}
+      className={`${styles.themeToggle} ${
+        isDarkMode ? styles.themeToggleDark : ""
+      }`}
       onClick={onToggle}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -25,13 +28,19 @@ export function ThemeToggle({ isDarkMode, onToggle }: ThemeToggleProps) {
       aria-label="Toggle dark mode"
       tabIndex={0}
     >
-      <div className="theme-toggle-thumb">
+      <div className={styles.themeToggleThumb}>
         {isDarkMode ? <Moon size={14} /> : <Sun size={14} />}
       </div>
-      <div className="theme-icon-slot sun" aria-hidden="true">
+      <div
+        className={`${styles.themeIconSlot} ${styles.sun}`}
+        aria-hidden="true"
+      >
         <Sun size={14} />
       </div>
-      <div className="theme-icon-slot moon" aria-hidden="true">
+      <div
+        className={`${styles.themeIconSlot} ${styles.moon}`}
+        aria-hidden="true"
+      >
         <Moon size={14} />
       </div>
     </div>

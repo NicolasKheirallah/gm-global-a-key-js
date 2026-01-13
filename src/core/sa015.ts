@@ -1,6 +1,5 @@
 import { CryptoShim } from "./crypto-shim";
 import { PASSWORD_MAP } from "./sa015_data";
-import { aesEncryptBlock } from "./aes";
 
 /**
  * Valid prefix types for SA015 password blobs
@@ -290,7 +289,7 @@ export class SA015Engine {
     const block = new Uint8Array(16).fill(0xff);
     block.set(seed, 11);
 
-    const encrypted = aesEncryptBlock(aesKey, block);
+    const encrypted = await CryptoShim.aesEncryptBlock(aesKey, block);
 
     return {
       mac: encrypted.slice(0, 5),

@@ -349,6 +349,40 @@ export class UDSMessage {
   }
 
   /**
+   * Build Read Data By Identifier (0x22) request
+   * @param did - Data Identifier to read (e.g. 0xF190 for VIN)
+   */
+  static buildReadDataByIdentifier(did: number): Uint8Array {
+    return new Uint8Array([
+      UDS_SID.READ_DATA_BY_IDENTIFIER,
+      (did >> 8) & 0xff,
+      did & 0xff,
+    ]);
+  }
+
+  /**
+   * Build Routine Control (0x31) request
+   * @param subFunction - 0x01 (Start), 0x02 (Stop), 0x03 (Result)
+   * @param routineId - Routine Identifier
+   * @param optionRecord - Optional data to send with request
+   */
+  static buildRoutineControl(
+    subFunction: number,
+    routineId: number,
+    optionRecord: Uint8Array = new Uint8Array(0)
+  ): Uint8Array {
+    const request = new Uint8Array(4 + optionRecord.length);
+    request[0] = UDS_SID.ROUTINE_CONTROL;
+    request[1] = subFunction;
+    request[2] = (routineId >> 8) & 0xff;
+    request[3] = routineId & 0xff;
+    if (optionRecord.length > 0) {
+      request.set(optionRecord, 4);
+    }
+    return request;
+  }
+
+  /**
    * Format bytes for display
    */
   static formatBytes(bytes: Uint8Array): string {
