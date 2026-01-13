@@ -1,0 +1,407 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg-color: #f3f4f6; /* Light Gray 100 */
+  --card-bg: #ffffff;
+  --text-primary: #111827; /* Gray 900 */
+  --text-secondary: #6b7280; /* Gray 500 */
+  --accent-color: #2563eb; /* Blue 600 */
+  --accent-hover: #1d4ed8; /* Blue 700 */
+  --border-color: #e5e7eb; /* Gray 200 */
+  --input-bg: #f9fafb; /* Gray 50 */
+  --input-border: #d1d5db; /* Gray 300 */
+  --radius: 8px;
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --container-width: 480px;
+}
+
+body.dark-mode {
+  --bg-color: #111827; /* Gray 900 */
+  --card-bg: #1f2937; /* Gray 800 */
+  --text-primary: #f9fafb; /* Gray 50 */
+  --text-secondary: #9ca3af; /* Gray 400 */
+  --accent-color: #3b82f6; /* Blue 500 */
+  --accent-hover: #60a5fa; /* Blue 400 */
+  --border-color: #374151; /* Gray 700 */
+  --input-bg: #111827; /* Gray 900 */
+  --input-border: #4b5563; /* Gray 600 */
+}
+
+body {
+  font-family: 'Inter', -apple-system, sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-primary);
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.3s ease, color 0.3s ease;
+  padding: 1rem;
+}
+
+.container {
+  width: 100%;
+  max-width: var(--container-width);
+  background: var(--card-bg);
+  padding: 2.5rem;
+  border-radius: 16px;
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border-color);
+  position: relative;
+  height: 700px; /* Fixed height per user request */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* contain content */
+}
+
+.content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto; /* Scroll internally if needed */
+  padding-right: 4px; /* Space for scrollbar */
+}
+
+.view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+h1 {
+  font-size: 1.5rem; /* 24px */
+  font-weight: 700;
+  margin: 0 0 2rem 0;
+  color: var(--text-primary);
+  letter-spacing: -0.025em;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.theme-toggle {
+  background: var(--input-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 20px;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  position: relative;
+  height: 36px;
+  width: 72px;
+  transition: all 0.2s ease;
+}
+
+.theme-toggle:hover {
+  border-color: var(--text-secondary);
+}
+
+.theme-toggle-thumb {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  width: 26px;
+  height: 26px;
+  background: var(--text-primary);
+  border-radius: 50%;
+  transition: transform 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--card-bg);
+}
+
+.theme-toggle.dark .theme-toggle-thumb {
+  transform: translateX(36px);
+  background: var(--accent-color);
+}
+
+.theme-icon-slot {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  z-index: 1;
+  transition: color 0.2s;
+}
+
+.theme-toggle.dark .theme-icon-slot.moon {
+  color: var(--text-primary);
+}
+
+.theme-toggle:not(.dark) .theme-icon-slot.sun {
+  color: var(--text-primary);
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  background: var(--input-bg);
+  padding: 4px;
+  border-radius: 10px;
+  margin-bottom: 2rem;
+}
+
+.tabs button {
+  flex: 1;
+  padding: 0.5rem;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  transition: all 0.2s;
+}
+
+.tabs button.active {
+  background: var(--card-bg);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+  font-weight: 600;
+}
+
+/* Forms */
+.form-group {
+  margin-bottom: 1.25rem;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+input, select {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius);
+  font-size: 1rem;
+  font-family: 'JetBrains Mono', monospace; /* Nice for keys */
+  background: var(--input-bg);
+  color: var(--text-primary);
+  transition: all 0.2s;
+}
+
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+/* Checkbox */
+.form-group.checkbox {
+  display: flex;
+  align-items: center;
+  margin: 1.5rem 0;
+}
+
+.form-group.checkbox label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-primary);
+  font-weight: 500;
+  cursor: pointer;
+  margin: 0;
+}
+
+input[type="checkbox"] {
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 4px;
+  accent-color: var(--accent-color);
+  margin: 0;
+  cursor: pointer;
+}
+
+/* Primary Button */
+button.action-btn, 
+.view > button {
+  width: 100%;
+  padding: 0.875rem;
+  background: var(--text-primary); /* Primary button color */
+  color: var(--card-bg);
+  border: none;
+  border-radius: var(--radius);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+button.action-btn:hover, 
+.view > button:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+button:disabled,
+.view > button:disabled {
+  background: var(--input-border);
+  color: var(--text-secondary);
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Results */
+.result-area {
+  margin-top: 2rem;
+  padding: 1.25rem;
+  background: var(--input-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  animation: slideUp 0.3s ease-out;
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.result-area label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.5rem;
+}
+
+pre {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 1.1rem;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  font-weight: 600;
+}
+
+/* Error */
+.error {
+  margin-top: 1rem;
+  font-size: 0.875rem;
+  color: #ef4444;
+  padding: 0.75rem;
+  background: #fef2f2;
+  border: 1px solid #fee2e2;
+  border-radius: var(--radius);
+}
+
+body.dark-mode .error {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+/* Reset */
+* {
+  box-sizing: border-box;
+}
+
+/* Spinner */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Profile Dropdown */
+.profile-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+  z-index: 10;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.profile-dropdown li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.profile-dropdown li:hover {
+  background: var(--input-bg);
+}
+
+.profile-dropdown li span {
+  flex: 1;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.delete-btn {
+  background: none;
+  border: none;
+  color: #ef4444;
+  padding: 0.25rem;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.delete-btn:hover {
+  background: #fee2e2;
+}
+
+/* Save Group */
+.save-group {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+  align-items: center;
+  padding-top: 1.5rem;
+  border-top: 1px dashed var(--border-color);
+}
+
+.save-btn {
+  width: auto !important;
+  margin-top: 0 !important;
+  padding: 0.6rem 1rem !important;
+  background: var(--accent-color) !important;
+}
+
+.save-btn:hover {
+  background: var(--accent-hover) !important;
+}
+
+.save-btn:disabled {
+  background: var(--input-border) !important;
+}

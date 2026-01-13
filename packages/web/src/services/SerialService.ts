@@ -1,0 +1,508 @@
+/// <reference path="../types/web-serial.d.ts" />
+
+// Type alias for the Web Serial API SerialPort
+type WebSerialPort = Awaited<ReturnType<typeof navigator.serial.requestPort>>;
+
+/**
+ * Serial port connection state
+ */
+export type ConnectionState =
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "error";
+
+/**
+ * Serial command with metadata
+ */
+interface QueuedCommand {
+  command: string;
+  resolve: (value: string) => void;
+  reject: (error: Error) => void;
+  timeout: number;
+  timestamp: number;
+}
+
+/**
+ * Serial service configuration
+ */
+export interface SerialConfig {
+  /** Baud rate (default: 115200) */
+  baudRate?: number;
+  /** Command timeout in ms (default: 5000) */
+  defaultTimeout?: number;
+  /** Max retry attempts (default: 3) */
+  maxRetries?: number;
+  /** Delay between retries in ms (default: 500) */
+  retryDelay?: number;
+  /** Enable debug logging */
+  debug?: boolean;
+}
+
+/**
+ * Event callbacks for serial service
+ */
+export interface SerialEventHandlers {
+  onConnect?: () => void;
+  onDisconnect?: () => void;
+  onError?: (error: Error) => void;
+  onData?: (data: string) => void;
+  onStateChange?: (state: ConnectionState) => void;
+}
+
+/**
+ * Robust Serial Service with command queue, timeouts, and reconnection
+ */
+export class SerialService {
+  private port: WebSerialPort | null = null;
+  private reader: ReadableStreamDefaultReader<string> | null = null;
+  private writer: WritableStreamDefaultWriter<string> | null = null;
+  private buffer = "";
+  private commandQueue: QueuedCommand[] = [];
+  private isProcessing = false;
+  private _state: ConnectionState = "disconnected";
+  private config: Required<SerialConfig>;
+  private handlers: SerialEventHandlers = {};
+  private readLoopActive = false;
+  private reconnectAttempts = 0;
+
+  constructor(config: SerialConfig = {}) {
+    this.config = {
+      baudRate: config.baudRate ?? 115200,
+      defaultTimeout: config.defaultTimeout ?? 5000,
+      maxRetries: config.maxRetries ?? 3,
+      retryDelay: config.retryDelay ?? 500,
+      debug: config.debug ?? false,
+    };
+  }
+
+  /**
+   * Current connection state
+   */
+  get state(): ConnectionState {
+    return this._state;
+  }
+
+  /**
+   * Whether the port is connected
+   */
+  get isConnected(): boolean {
+    return this._state === "connected";
+  }
+
+  /**
+   * Set event handlers
+   */
+  setHandlers(handlers: SerialEventHandlers): void {
+    this.handlers = { ...this.handlers, ...handlers };
+  }
+
+  /**
+   * Update connection state and notify handlers
+   */
+  private setState(state: ConnectionState): void {
+    const prevState = this._state;
+    this._state = state;
+    if (prevState !== state) {
+      this.handlers.onStateChange?.(state);
+      this.log(`State changed: ${prevState} -> ${state}`);
+    }
+  }
+
+  /**
+   * Debug logging
+   */
+  private log(message: string, data?: unknown): void {
+    if (this.config.debug) {
+      console.log(`[SerialService] ${message}`, data ?? "");
+    }
+  }
+
+  /**
+   * Connect to a serial port
+   */
+  async connect(): Promise<void> {
+    if (this._state === "connected") {
+      this.log("Already connected");
+      return;
+    }
+
+    this.setState("connecting");
+
+    try {
+      // Check for Web Serial API support
+      if (!("serial" in navigator)) {
+        throw new Error(
+          "Web Serial API not supported. Use Chrome/Edge on Desktop."
+        );
+      }
+
+      this.port = await navigator.serial.requestPort({
+        filters: [
+          { usbVendorId: 0x0403 }, // FTDI
+          { usbVendorId: 0x10c4 }, // Silicon Labs
+          { usbVendorId: 0x1a86 }, // CH340
+          { usbVendorId: 0x067b }, // Prolific
+        ],
+      });
+
+      if (!this.port) {
+        throw new Error("No port selected");
+      }
+
+      await this.port.open({ baudRate: this.config.baudRate });
+
+      // Setup streams
+      const textDecoder = new TextDecoderStream();
+      this.port.readable!.pipeTo(textDecoder.writable).catch((e) => {
+        this.log("Readable pipe error", e);
+      });
+      this.reader = textDecoder.readable.getReader();
+
+      const textEncoder = new TextEncoderStream();
+      // @ts-ignore
+      textEncoder.readable.pipeTo(this.port.writable!).catch((e) => {
+        this.log("Writable pipe error", e);
+      });
+      this.writer = textEncoder.writable.getWriter();
+
+      this.setState("connected");
+      this.reconnectAttempts = 0;
+      this.handlers.onConnect?.();
+
+      // Start read loop
+      this.startReadLoop();
+    } catch (e) {
+      this.setState("error");
+      const error = e instanceof Error ? e : new Error(String(e));
+      this.handlers.onError?.(error);
+      throw error;
+    }
+  }
+
+  /**
+   * Disconnect from the serial port
+   */
+  async disconnect(): Promise<void> {
+    this.readLoopActive = false;
+
+    // Clear pending commands
+    this.commandQueue.forEach((cmd) => {
+      cmd.reject(new Error("Disconnected"));
+    });
+    this.commandQueue = [];
+
+    if (this.reader) {
+      try {
+        await this.reader.cancel();
+      } catch {
+        /* ignore */
+      }
+      this.reader = null;
+    }
+
+    if (this.writer) {
+      try {
+        await this.writer.close();
+      } catch {
+        /* ignore */
+      }
+      this.writer = null;
+    }
+
+    if (this.port) {
+      try {
+        await this.port.close();
+      } catch {
+        /* ignore */
+      }
+      this.port = null;
+    }
+
+    this.buffer = "";
+    this.setState("disconnected");
+    this.handlers.onDisconnect?.();
+  }
+
+  /**
+   * Attempt to reconnect
+   */
+  private async attemptReconnect(): Promise<boolean> {
+    if (this.reconnectAttempts >= this.config.maxRetries) {
+      this.log("Max reconnection attempts reached");
+      return false;
+    }
+
+    this.reconnectAttempts++;
+    this.log(`Reconnection attempt ${this.reconnectAttempts}`);
+
+    await this.delay(this.config.retryDelay);
+
+    try {
+      if (this.port) {
+        await this.port.open({ baudRate: this.config.baudRate });
+
+        const textDecoder = new TextDecoderStream();
+        // @ts-ignore
+        this.port.readable!.pipeTo(textDecoder.writable);
+        this.reader = textDecoder.readable.getReader();
+
+        const textEncoder = new TextEncoderStream();
+        // @ts-ignore
+        textEncoder.readable.pipeTo(this.port.writable!);
+        this.writer = textEncoder.writable.getWriter();
+
+        this.setState("connected");
+        this.startReadLoop();
+        return true;
+      }
+    } catch (e) {
+      this.log("Reconnection failed", e);
+    }
+
+    return false;
+  }
+
+  /**
+   * Continuous read loop with error handling
+   */
+  private async startReadLoop(): Promise<void> {
+    if (this.readLoopActive) return;
+    this.readLoopActive = true;
+
+    while (this.readLoopActive && this.reader && this._state === "connected") {
+      try {
+        const { value, done } = await this.reader.read();
+
+        if (done) {
+          this.log("Reader done");
+          break;
+        }
+
+        if (value) {
+          this.buffer += value;
+          this.handlers.onData?.(value);
+
+          // Check for ELM327 prompt
+          if (this.buffer.includes(">")) {
+            this.processBuffer();
+          }
+        }
+      } catch (e) {
+        this.log("Read error", e);
+
+        if (this._state === "connected") {
+          this.setState("error");
+
+          const reconnected = await this.attemptReconnect();
+          if (!reconnected) {
+            await this.disconnect();
+            this.handlers.onError?.(
+              e instanceof Error ? e : new Error(String(e))
+            );
+            break;
+          }
+        }
+      }
+    }
+
+    this.readLoopActive = false;
+  }
+
+  /**
+   * Process buffer when complete response received
+   */
+  private processBuffer(): void {
+    const response = this.buffer.replace(">", "").trim();
+    this.buffer = "";
+
+    // Resolve the current command
+    if (this.commandQueue.length > 0 && this.isProcessing) {
+      const cmd = this.commandQueue.shift()!;
+      this.isProcessing = false;
+      cmd.resolve(response);
+    }
+
+    // Process next command in queue
+    this.processQueue();
+  }
+
+  /**
+   * Process command queue
+   */
+  private async processQueue(): Promise<void> {
+    if (this.isProcessing || this.commandQueue.length === 0) return;
+    if (this._state !== "connected" || !this.writer) return;
+
+    const cmd = this.commandQueue[0];
+    this.isProcessing = true;
+
+    try {
+      this.log(`TX: ${cmd.command}`);
+      await this.writer.write(cmd.command + "\r");
+
+      // Set timeout
+      setTimeout(() => {
+        if (this.isProcessing && this.commandQueue[0] === cmd) {
+          this.commandQueue.shift();
+          this.isProcessing = false;
+          cmd.reject(new Error(`Command timeout: ${cmd.command}`));
+          this.processQueue();
+        }
+      }, cmd.timeout);
+    } catch (e) {
+      this.commandQueue.shift();
+      this.isProcessing = false;
+      cmd.reject(e instanceof Error ? e : new Error(String(e)));
+      this.processQueue();
+    }
+  }
+
+  /**
+   * Send a command and wait for response
+   * @param command - AT or OBD command
+   * @param timeout - Optional timeout override
+   * @returns Response string
+   */
+  async send(command: string, timeout?: number): Promise<string> {
+    if (this._state !== "connected" || !this.writer) {
+      throw new Error("Not connected");
+    }
+
+    return new Promise<string>((resolve, reject) => {
+      this.commandQueue.push({
+        command,
+        resolve,
+        reject,
+        timeout: timeout ?? this.config.defaultTimeout,
+        timestamp: Date.now(),
+      });
+
+      this.processQueue();
+    });
+  }
+
+  /**
+   * Send command with automatic retry on failure
+   */
+  async sendWithRetry(
+    command: string,
+    retries: number = this.config.maxRetries
+  ): Promise<string> {
+    let lastError: Error | null = null;
+
+    for (let i = 0; i <= retries; i++) {
+      try {
+        return await this.send(command);
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        this.log(`Command failed, retry ${i + 1}/${retries}`, e);
+
+        if (i < retries) {
+          await this.delay(this.config.retryDelay);
+        }
+      }
+    }
+
+    throw lastError ?? new Error("Command failed after retries");
+  }
+
+  /**
+   * Execute full seed request flow for GMLAN
+   * @param header - ECU CAN ID header (e.g., "7E0")
+   * @returns Seed response and log
+   */
+  async executeSeedRequest(
+    header = "7E0"
+  ): Promise<{ seed: string; log: string }> {
+    const logEntries: string[] = [];
+
+    const sendLog = async (cmd: string): Promise<string> => {
+      const response = await this.send(cmd);
+      logEntries.push(`TX: ${cmd} -> RX: ${response}`);
+      return response;
+    };
+
+    // Initialize ELM327
+    await sendLog("ATZ"); // Reset
+    await this.delay(500); // Wait for reset
+    await sendLog("ATE0"); // Echo off
+    await sendLog("ATL0"); // Linefeeds off
+    await sendLog("ATS0"); // Spaces off (optional)
+    await sendLog("ATSP0"); // Auto protocol
+
+    // Set CAN header
+    await sendLog(`ATSH ${header}`);
+
+    // Enter diagnostic session
+    await sendLog("10 03"); // Extended diagnostic session
+
+    // Request seed
+    const seedResp = await sendLog("27 01");
+
+    return { seed: seedResp, log: logEntries.join("\n") };
+  }
+
+  /**
+   * Send security access key
+   * @param key - 2-byte key as hex string (e.g., "A1B2")
+   * @returns Response
+   */
+  async sendKey(key: string): Promise<string> {
+    if (key.length !== 4) {
+      throw new Error("Key must be 4 hex characters (2 bytes)");
+    }
+
+    const k1 = key.substring(0, 2);
+    const k2 = key.substring(2, 4);
+    const command = `27 02 ${k1} ${k2}`;
+
+    const response = await this.send(command);
+    return `TX: ${command} -> RX: ${response}`;
+  }
+
+  /**
+   * Send 5-byte SA015 key
+   * @param key - 5-byte key as hex string (e.g., "0F8323EB68")
+   * @returns Response
+   */
+  async sendKey5Byte(key: string): Promise<string> {
+    if (key.length !== 10) {
+      throw new Error("SA015 key must be 10 hex characters (5 bytes)");
+    }
+
+    const bytes = [];
+    for (let i = 0; i < 10; i += 2) {
+      bytes.push(key.substring(i, i + 2));
+    }
+
+    const command = `27 02 ${bytes.join(" ")}`;
+    const response = await this.send(command);
+    return `TX: ${command} -> RX: ${response}`;
+  }
+
+  /**
+   * Clear command queue
+   */
+  clearQueue(): void {
+    this.commandQueue.forEach((cmd) => {
+      cmd.reject(new Error("Queue cleared"));
+    });
+    this.commandQueue = [];
+    this.isProcessing = false;
+  }
+
+  /**
+   * Get queue length
+   */
+  get queueLength(): number {
+    return this.commandQueue.length;
+  }
+
+  /**
+   * Delay helper
+   */
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+}
