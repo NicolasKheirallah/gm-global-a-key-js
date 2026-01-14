@@ -203,7 +203,9 @@ export class SerialService implements HardwareService {
 
       // Setup streams
       const textDecoder = new TextDecoderStream();
-      this.port.readable!.pipeTo(textDecoder.writable).catch((e) => {
+      this.port.readable!
+        .pipeTo(textDecoder.writable as WritableStream<Uint8Array>)
+        .catch((e) => {
         this.log("Readable pipe error", e);
       });
       this.reader = textDecoder.readable.getReader();
@@ -292,7 +294,9 @@ export class SerialService implements HardwareService {
         await this.port.open({ baudRate: this.config.baudRate });
 
         const textDecoder = new TextDecoderStream();
-        this.port.readable!.pipeTo(textDecoder.writable);
+        this.port.readable!.pipeTo(
+          textDecoder.writable as WritableStream<Uint8Array>
+        );
         this.reader = textDecoder.readable.getReader();
 
         const textEncoder = new TextEncoderStream();
