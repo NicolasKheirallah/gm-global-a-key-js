@@ -129,7 +129,7 @@ export function GMLANView({ sharedSeed }: GMLANViewProps) {
           id="gmlan-seed"
           value={seed}
           onChange={handleSeedChange}
-          placeholder="A1B2"
+          placeholder="AAAA"
           maxLength={4}
           autoComplete="off"
           spellCheck={false}

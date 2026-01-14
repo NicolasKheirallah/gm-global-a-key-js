@@ -527,7 +527,7 @@ export class SerialService implements HardwareService {
 
   /**
    * Send security access key
-   * @param key - 2-byte key as hex string (e.g., "A1B2")
+   * @param key - 2-byte key as hex string (e.g., "A21A")
    * @returns Response
    */
   async sendKey(key: string): Promise<string> {

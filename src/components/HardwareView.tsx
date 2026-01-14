@@ -30,6 +30,20 @@ export function HardwareView({
     Array<{ name: string; dll_path: string }>
   >([]);
   const [selectedDevice, setSelectedDevice] = useState("");
+  const [transportMode, setTransportMode] = useState<"isotp" | "can">("isotp");
+  const [addressingMode, setAddressingMode] = useState<
+    "physical" | "functional"
+  >("physical");
+  const [scanMode, setScanMode] = useState<"auto" | "can" | "iso15765">("auto");
+  const [isoTpConfig, setIsoTpConfig] = useState({
+    blockSize: "0",
+    stMin: "0",
+    wftMax: "0",
+    padValue: "",
+  });
+  const [responseFilterIds, setResponseFilterIds] = useState("");
+  const [structuredCommand, setStructuredCommand] = useState("22 F1 90");
+  const [structuredResult, setStructuredResult] = useState("");
 
   const isJ2534 = serialService && "listDevices" in serialService;
 
@@ -61,12 +75,34 @@ export function HardwareView({
     setConnectionState(serialService.state);
   }, [serialService, appendLog]);
 
+  useEffect(() => {
+    if (!serialService.isConnected) return;
+
+    const headerId = parseInt(ecuHeader, 16);
+    if (Number.isNaN(headerId)) return;
+
+    if (isJ2534 && "setHeader" in serialService) {
+      (serialService as { setHeader?: (id: number) => Promise<void> })
+        .setHeader?.(headerId)
+        .catch((e) =>
+          appendLog(
+            `Header update failed: ${e instanceof Error ? e.message : String(e)}`
+          )
+        );
+    } else {
+      serialService.send(`ATSH ${ecuHeader}`).catch(() => {});
+    }
+  }, [ecuHeader, serialService, isJ2534, appendLog]);
+
   const handleConnect = async () => {
     try {
       if (isJ2534 && selectedDevice && serialService.setDllPath) {
         serialService.setDllPath(selectedDevice);
       }
       await serialService.connect();
+      if (serialService.startHeartbeat) {
+        await serialService.startHeartbeat(2000, true);
+      }
       appendLog("Connected to device successfully.");
     } catch (e) {
       appendLog(
@@ -76,8 +112,57 @@ export function HardwareView({
   };
 
   const handleDisconnect = async () => {
+    if (serialService.stopHeartbeat) {
+      await serialService.stopHeartbeat();
+    }
     await serialService.disconnect();
     appendLog("Disconnected.");
+  };
+
+  const handleReadDeviceInfo = async () => {
+    if (!serialService.isConnected || !serialService.getDeviceInfo) return;
+    try {
+      const info = await serialService.getDeviceInfo();
+      appendLog(
+        `Device Info: API=${info.api_version} DLL=${info.dll_version} FW=${info.fw_version}`
+      );
+    } catch (e) {
+      appendLog(
+        `Device Info Error: ${e instanceof Error ? e.message : String(e)}`
+      );
+    }
+  };
+
+  const handleReadLastError = async () => {
+    if (!serialService.isConnected || !serialService.getLastError) return;
+    try {
+      const err = await serialService.getLastError();
+      appendLog(`J2534 Last Error: ${err}`);
+    } catch (e) {
+      appendLog(
+        `Last Error Read Failed: ${e instanceof Error ? e.message : String(e)}`
+      );
+    }
+  };
+
+  const handleReadIsoTpConfig = async () => {
+    if (!serialService.isConnected || !serialService.getIsoTpConfig) return;
+    try {
+      const config = await serialService.getIsoTpConfig();
+      setIsoTpConfig({
+        blockSize: String(config.block_size),
+        stMin: String(config.st_min),
+        wftMax: String(config.wft_max),
+        padValue: config.pad_value ? config.pad_value.toString(16).toUpperCase() : "",
+      });
+      appendLog(
+        `ISO-TP Config: BS=${config.block_size} STmin=${config.st_min} WFTmax=${config.wft_max} PAD=${config.pad_value}`
+      );
+    } catch (e) {
+      appendLog(
+        `ISO-TP Config Error: ${e instanceof Error ? e.message : String(e)}`
+      );
+    }
   };
 
   const handleScan = async () => {
@@ -131,22 +216,158 @@ export function HardwareView({
     appendLog("Starting Network Scan (Ping all modules)...");
     let found = 0;
 
-    for (const mod of GM_MODULES) {
+    if (serialService.scanNetwork) {
+      const moduleIds = GM_MODULES.map((m) => parseInt(m.id, 16)).filter(
+        (id) => !Number.isNaN(id)
+      );
       try {
-        await serialService.send(`ATSH ${mod.id}`, 200);
-        const resp = await serialService.send("3E 00", 300);
-        if (resp && (resp.includes("7E") || resp.includes("7F"))) {
-          appendLog(`[FOUND] ${mod.name} (${mod.id}) - ${resp}`);
+        const protocols =
+          scanMode === "auto"
+            ? (["can", "iso15765"] as Array<"can" | "iso15765">)
+            : ([scanMode] as Array<"can" | "iso15765">);
+        const retries = scanMode === "can" ? 1 : 2;
+        const results = await serialService.scanNetwork(
+          moduleIds,
+          protocols,
+          retries
+        );
+        for (const res of results) {
+          const hexId = res.id.toString(16).toUpperCase().padStart(3, "0");
+          const mod =
+            GM_MODULES.find((m) => m.id.toUpperCase() === hexId) ?? null;
+          appendLog(
+            `[FOUND] ${mod ? mod.name : "Unknown"} (${hexId}) - ${res.response}`
+          );
           found++;
         }
       } catch (e) {
-        // Ignore timeouts
+        appendLog(
+          `Scan failed: ${e instanceof Error ? e.message : String(e)}`
+        );
+      }
+    } else {
+      for (const mod of GM_MODULES) {
+        try {
+          await serialService.send(`ATSH ${mod.id}`, 200);
+          const resp = await serialService.send("3E 00", 300);
+          if (resp && (resp.includes("7E") || resp.includes("7F"))) {
+            appendLog(`[FOUND] ${mod.name} (${mod.id}) - ${resp}`);
+            found++;
+          }
+        } catch {
+          // Ignore timeouts
+        }
       }
     }
 
     appendLog(`Scan Complete. Found ${found} modules.`);
     setIsScanning(false);
     await serialService.send(`ATSH ${ecuHeader}`);
+  };
+
+  const applyAdvancedSettings = async () => {
+    if (!isJ2534) return;
+    if (!serialService.isConnected) {
+      appendLog("Error: Connect first to apply settings.");
+      return;
+    }
+
+    try {
+      if (transportMode === "can") {
+        await serialService.send("ATTP CAN");
+      } else {
+        await serialService.send("ATTP ISO");
+      }
+
+      if (serialService.setAddressingMode) {
+        await serialService.setAddressingMode(addressingMode);
+      } else if (addressingMode === "functional") {
+        await serialService.send("ATSH 7DF");
+        if (serialService.setFunctionalResponseRange) {
+          await serialService.setFunctionalResponseRange(0x7e8, 0x7f0);
+        }
+      } else {
+        await serialService.send(`ATSH ${ecuHeader}`);
+      }
+
+      if (responseFilterIds.trim() && serialService.setResponseFilters) {
+        const ids = responseFilterIds
+          .split(",")
+          .map((id) => parseInt(id.trim(), 16))
+          .filter((id) => !Number.isNaN(id));
+        const filters = ids.map((id) => ({
+          mask: id > 0x7ff ? 0x1fffffff : 0x7ff,
+          pattern: id,
+        }));
+        await serialService.setResponseFilters(filters, ids);
+      }
+
+      if (serialService.setIsoTpConfig) {
+        const blockSize = Number(isoTpConfig.blockSize);
+        const stMin = Number(isoTpConfig.stMin);
+        const wftMax = Number(isoTpConfig.wftMax);
+        if (Number.isNaN(blockSize) || Number.isNaN(stMin) || Number.isNaN(wftMax)) {
+          throw new Error("ISO-TP parameters must be numeric");
+        }
+
+        const config = {
+          block_size: blockSize,
+          st_min: stMin,
+          wft_max: wftMax,
+          pad_value: isoTpConfig.padValue
+            ? parseInt(isoTpConfig.padValue, 16)
+            : undefined,
+        };
+        await serialService.setIsoTpConfig(config);
+      }
+
+      appendLog("Advanced settings applied.");
+    } catch (e) {
+      appendLog(
+        `Failed to apply settings: ${e instanceof Error ? e.message : String(e)}`
+      );
+    }
+  };
+
+  const handleStructuredSend = async () => {
+    if (!serialService.isConnected) {
+      appendLog("Error: Not connected to hardware.");
+      return;
+    }
+    if (!structuredCommand.trim()) {
+      appendLog("Error: Enter a command to send.");
+      return;
+    }
+
+    try {
+      if (serialService.sendAndCollectById) {
+        const results = await serialService.sendAndCollectById(
+          structuredCommand,
+          2000
+        );
+        const lines = Object.values(results).map((entry) => {
+          const idHex = entry.id.toString(16).toUpperCase();
+          const payloads = entry.responses
+            .map((resp, i) => `  [${entry.timestamps[i]}] ${resp}`)
+            .join("\n");
+          return `ID ${idHex}:\n${payloads}`;
+        });
+        setStructuredResult(lines.join("\n"));
+      } else if (serialService.sendAndCollect) {
+        const results = await serialService.sendAndCollect(
+          structuredCommand,
+          2000
+        );
+        setStructuredResult(results.join("\n"));
+      } else {
+        const result = await serialService.send(structuredCommand, 2000);
+        setStructuredResult(result);
+      }
+    } catch (e) {
+      setStructuredResult(
+        `Error: ${e instanceof Error ? e.message : String(e)}`
+      );
+    }
   };
 
   const handleUnlock = async () => {
@@ -259,6 +480,25 @@ export function HardwareView({
               Scan Network (Identify Modules)
             </button>
           </div>
+
+          {isJ2534 && (
+            <div style={{ marginTop: "1rem", display: "grid", gap: "0.75rem" }}>
+              <button
+                className={styles.button}
+                onClick={handleReadDeviceInfo}
+                disabled={!isConnected}
+              >
+                Read Device Info
+              </button>
+              <button
+                className={styles.button}
+                onClick={handleReadLastError}
+                disabled={!isConnected}
+              >
+                Read Last Error
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Right Column: Actions */}
@@ -308,7 +548,7 @@ export function HardwareView({
               <input
                 value={keyToUnlock}
                 onChange={(e) => setKeyToUnlock(formatHex(e.target.value, 5))}
-                placeholder="Key (e.g. A1B2)"
+                placeholder="Key (e.g. AFAB)"
               />
               <button
                 className={styles.button}
@@ -318,6 +558,174 @@ export function HardwareView({
               >
                 Unlock
               </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Advanced J2534 Settings */}
+        <div className={styles.card}>
+          <h3>
+            <Zap size={18} /> Advanced (J2534)
+          </h3>
+
+          <div className={styles.formGroup}>
+            <label>Transport Mode</label>
+            <select
+              value={transportMode}
+              onChange={(e) =>
+                setTransportMode(e.target.value as "isotp" | "can")
+              }
+              disabled={!isJ2534 || !isConnected}
+            >
+              <option value="isotp">ISO-TP (Multi-frame)</option>
+              <option value="can">CAN (Single-frame)</option>
+            </select>
+          </div>
+
+          <div className={styles.formGroup}>
+            <label>Addressing Mode</label>
+            <select
+              value={addressingMode}
+              onChange={(e) =>
+                setAddressingMode(e.target.value as "physical" | "functional")
+              }
+              disabled={!isJ2534 || !isConnected}
+            >
+              <option value="physical">Physical (7E0/7E8)</option>
+              <option value="functional">Functional (7DF/7E8..7EF)</option>
+            </select>
+          </div>
+
+          <div className={styles.formGroup}>
+            <label>Scan Mode</label>
+            <select
+              value={scanMode}
+              onChange={(e) =>
+                setScanMode(e.target.value as "auto" | "can" | "iso15765")
+              }
+              disabled={!isJ2534 || !isConnected}
+            >
+              <option value="auto">Auto (CAN + ISO-TP)</option>
+              <option value="can">CAN Only</option>
+              <option value="iso15765">ISO-TP Only</option>
+            </select>
+          </div>
+
+          <div className={styles.formGroup}>
+            <label>Response Filter IDs (hex, comma-separated)</label>
+            <input
+              value={responseFilterIds}
+              onChange={(e) => setResponseFilterIds(e.target.value)}
+              placeholder="e.g. 7E8,7E9"
+              disabled={!isJ2534 || !isConnected}
+            />
+          </div>
+
+          <div className={styles.formGroup}>
+            <label>ISO-TP Block Size (BS)</label>
+            <input
+              value={isoTpConfig.blockSize}
+              onChange={(e) =>
+                setIsoTpConfig((prev) => ({
+                  ...prev,
+                  blockSize: e.target.value,
+                }))
+              }
+              disabled={!isJ2534 || !isConnected}
+            />
+          </div>
+
+          <div className={styles.formGroup}>
+            <label>ISO-TP STmin</label>
+            <input
+              value={isoTpConfig.stMin}
+              onChange={(e) =>
+                setIsoTpConfig((prev) => ({
+                  ...prev,
+                  stMin: e.target.value,
+                }))
+              }
+              disabled={!isJ2534 || !isConnected}
+            />
+          </div>
+
+          <div className={styles.formGroup}>
+            <label>ISO-TP WFTmax</label>
+            <input
+              value={isoTpConfig.wftMax}
+              onChange={(e) =>
+                setIsoTpConfig((prev) => ({
+                  ...prev,
+                  wftMax: e.target.value,
+                }))
+              }
+              disabled={!isJ2534 || !isConnected}
+            />
+          </div>
+
+          <div className={styles.formGroup}>
+            <label>ISO-TP Pad Value (hex, optional)</label>
+            <input
+              value={isoTpConfig.padValue}
+              onChange={(e) =>
+                setIsoTpConfig((prev) => ({
+                  ...prev,
+                  padValue: formatHex(e.target.value, 1),
+                }))
+              }
+              disabled={!isJ2534 || !isConnected}
+            />
+          </div>
+
+          <button
+            className={styles.button}
+            onClick={handleReadIsoTpConfig}
+            disabled={!isJ2534 || !isConnected}
+          >
+            Read ISO-TP Config
+          </button>
+
+          <button
+            className={styles.button}
+            onClick={applyAdvancedSettings}
+            disabled={!isJ2534 || !isConnected}
+          >
+            Apply Advanced Settings
+          </button>
+        </div>
+
+        {/* Structured Response Panel */}
+        <div className={styles.card}>
+          <h3>
+            <Search size={18} /> Structured Response
+          </h3>
+
+          <div className={styles.formGroup}>
+            <label>UDS Command</label>
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <input
+                value={structuredCommand}
+                onChange={(e) => setStructuredCommand(e.target.value)}
+                placeholder="e.g. 22 F1 90"
+              />
+              <button
+                className={styles.button}
+                style={{ width: "auto" }}
+                onClick={handleStructuredSend}
+                disabled={!isConnected}
+              >
+                Send
+              </button>
+            </div>
+          </div>
+
+          <div className={styles.formGroup}>
+            <label>Responses by ID</label>
+            <div
+              className={styles.terminal}
+              style={{ minHeight: "140px", maxHeight: "240px" }}
+            >
+              {structuredResult || "No structured responses yet."}
             </div>
           </div>
         </div>
