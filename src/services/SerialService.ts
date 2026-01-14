@@ -72,10 +72,12 @@ export interface SerialEventHandlers {
   onStateChange?: (state: ConnectionState) => void;
 }
 
+import type { HardwareService } from "./HardwareService";
+
 /**
  * Robust Serial Service with command queue, timeouts, and reconnection
  */
-export class SerialService {
+export class SerialService implements HardwareService {
   private port: WebSerialPort | null = null;
   private reader: ReadableStreamDefaultReader<string> | null = null;
   private writer: WritableStreamDefaultWriter<string> | null = null;

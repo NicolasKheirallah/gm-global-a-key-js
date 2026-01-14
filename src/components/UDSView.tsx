@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { FileSearch, Play, Loader2 } from "lucide-react";
 import { UDSMessage } from "../core";
-import { SerialService } from "../services/SerialService";
+import type { HardwareService } from "../services/HardwareService";
 import { useSessionStorage } from "../hooks/useSessionStorage";
 import styles from "./View.module.css";
 
 interface UDSViewProps {
-  serialService: SerialService;
+  serialService: HardwareService;
 }
 
 /**

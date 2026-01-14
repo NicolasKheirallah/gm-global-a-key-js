@@ -1,11 +1,10 @@
-import { useState, useCallback, useEffect, useRef } from "react";
-import { Cpu, Lock, FileText, Plug, Activity } from "lucide-react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { Cpu, Lock, FileText, Plug, Activity, Layers } from "lucide-react";
 import styles from "./App.module.css";
-/* Global styles for resets/variables only */
+/* Global styles for resets only */
 import "./App.css";
-import { useTheme } from "./hooks/useTheme";
+// import { useTheme } from "./hooks/useTheme"; // Deprecated - forcing Dark Mode
 import {
-  ThemeToggle,
   GMLANView,
   SA015View,
   LogParserView,
@@ -14,57 +13,59 @@ import {
 } from "./components";
 import { ToastProvider } from "./components/ui/Toast";
 import { SerialService } from "./services/SerialService";
+import { J2534Service } from "./services/J2534Service";
+import type { HardwareService } from "./services/HardwareService";
 
-/**
- * Active tab type
- */
+const isTauri = () => {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+};
+
 type TabId = "gmlan" | "sa015" | "logs" | "hw" | "uds";
 
-/**
- * Tab configuration
- */
 const TABS: Array<{ id: TabId; label: string; icon: typeof Cpu }> = [
-  { id: "gmlan", label: "Legacy", icon: Cpu },
-  { id: "sa015", label: "SA015", icon: Lock },
-  { id: "logs", label: "Logs", icon: FileText },
-  { id: "hw", label: "Hardware", icon: Plug },
-  { id: "uds", label: "UDS", icon: Activity },
+  { id: "hw", label: "Hardware & Connection", icon: Plug },
+  { id: "gmlan", label: "Legacy (GMLAN)", icon: Layers },
+  { id: "sa015", label: "Global A (SA015)", icon: Lock },
+  { id: "uds", label: "UDS Diagnostics", icon: Activity },
+  { id: "logs", label: "Log Analysis", icon: FileText },
 ];
 
-/**
- * Main application component
- */
 function App() {
-  const [activeTab, setActiveTab] = useState<TabId>("gmlan");
+  const [activeTab, setActiveTab] = useState<TabId>("hw");
   const [sharedSeed, setSharedSeed] = useState("");
-  const { isDarkMode, toggleTheme } = useTheme();
+  const [isConnected, setIsConnected] = useState(false);
 
-  // Shared Serial Service
-  const serialRef = useRef<SerialService | null>(null);
+  // Shared Hardware Service
+  const serviceRef = useRef<HardwareService | null>(null);
 
-  // Initialize serial service once
-  if (!serialRef.current) {
-    serialRef.current = new SerialService({
-      defaultTimeout: 5000,
-      maxRetries: 3,
-      debug: true,
-    });
+  // Initialize service once
+  if (!serviceRef.current) {
+    if (isTauri()) {
+      serviceRef.current = new J2534Service();
+    } else {
+      serviceRef.current = new SerialService({
+        defaultTimeout: 5000,
+        maxRetries: 3,
+        debug: true,
+      });
+    }
   }
 
-  // Cleanup on unmount
+  // Subscribe to connection state
   useEffect(() => {
-    return () => {
-      serialRef.current?.disconnect();
-    };
+    // Poll for connection state or setup listeners
+    // For this prototype, we'll let HardwareView manage exact state updates for now
+    // but we can poll serviceRef.current.isConnected if needed for the status bar
+    const interval = setInterval(() => {
+      if (serviceRef.current) {
+        setIsConnected(serviceRef.current.isConnected);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
   }, []);
 
-  /**
-   * Handle seed found from log parser or hardware view
-   * Auto-switches to appropriate calculator based on seed length
-   */
   const handleFoundSeed = useCallback((seed: string) => {
     setSharedSeed(seed);
-    // 2 bytes (4 chars) -> GMLAN, 5 bytes (10 chars) -> SA015
     if (seed.length <= 4) {
       setActiveTab("gmlan");
     } else {
@@ -72,92 +73,93 @@ function App() {
     }
   }, []);
 
+  const activeTabLabel = TABS.find((t) => t.id === activeTab)?.label;
+
   return (
     <ToastProvider>
-      <div className={styles.container}>
-        <header className={styles.header}>
-          <h1>
-            GM Key Tools
-            <ThemeToggle isDarkMode={isDarkMode} onToggle={toggleTheme} />
-          </h1>
-        </header>
-
-        <nav
-          className={styles.tabs}
-          role="tablist"
-          aria-label="Key Calculator Modes"
-        >
-          {TABS.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              role="tab"
-              aria-selected={activeTab === id}
-              aria-controls={`panel-${id}`}
-              className={`${styles.tab} ${
-                activeTab === id ? styles.tabActive : ""
-              }`}
-              onClick={() => setActiveTab(id)}
-            >
-              <Icon size={18} aria-hidden="true" />
-              {label}
-            </button>
-          ))}
-        </nav>
-
-        <main className={styles.content}>
-          <div
-            id="panel-gmlan"
-            role="tabpanel"
-            aria-labelledby="tab-gmlan"
-            hidden={activeTab !== "gmlan"}
-          >
-            {activeTab === "gmlan" && <GMLANView sharedSeed={sharedSeed} />}
+      <div className={styles.layout}>
+        {/* Sidebar */}
+        <aside className={styles.sidebar}>
+          <div className={styles.brand}>
+            <h1>GM Key Tools</h1>
+            <span className={styles.brandSub}>Global A Diagnostic Utility</span>
           </div>
 
+          <nav className={styles.nav}>
+            {TABS.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                className={`${styles.navItem} ${
+                  activeTab === id ? styles.navItemActive : ""
+                }`}
+                onClick={() => setActiveTab(id)}
+              >
+                <Icon size={20} className={styles.navIcon} />
+                {label}
+              </button>
+            ))}
+          </nav>
+
+          {/* Version / Info Footer */}
           <div
-            id="panel-sa015"
-            role="tabpanel"
-            aria-labelledby="tab-sa015"
-            hidden={activeTab !== "sa015"}
+            style={{
+              marginTop: "auto",
+              fontSize: "0.7rem",
+              color: "var(--text-muted)",
+            }}
           >
-            {activeTab === "sa015" && <SA015View sharedSeed={sharedSeed} />}
+            v1.1.0-alpha <br />
+            {isTauri() ? "Native Mode (J2534)" : "Web Mode (Serial)"}
+          </div>
+        </aside>
+
+        {/* Main Content */}
+        <main className={styles.main}>
+          {/* Header */}
+          <header className={styles.header}>
+            <div className={styles.headerTitle}>{activeTabLabel}</div>
+            {/* Future: User Profile / Settings */}
+          </header>
+
+          {/* Scrollable Area */}
+          <div className={styles.contentScroll}>
+            <div className={styles.contentInner}>
+              <div hidden={activeTab !== "gmlan"}>
+                <GMLANView sharedSeed={sharedSeed} />
+              </div>
+              <div hidden={activeTab !== "sa015"}>
+                <SA015View sharedSeed={sharedSeed} />
+              </div>
+              <div hidden={activeTab !== "logs"}>
+                <LogParserView onSeedFound={handleFoundSeed} />
+              </div>
+              <div hidden={activeTab !== "hw"}>
+                <HardwareView
+                  onSeedFound={handleFoundSeed}
+                  serialService={serviceRef.current!}
+                />
+              </div>
+              <div hidden={activeTab !== "uds"}>
+                <UDSView serialService={serviceRef.current!} />
+              </div>
+            </div>
           </div>
 
-          <div
-            id="panel-logs"
-            role="tabpanel"
-            aria-labelledby="tab-logs"
-            hidden={activeTab !== "logs"}
-          >
-            {activeTab === "logs" && (
-              <LogParserView onSeedFound={handleFoundSeed} />
-            )}
-          </div>
-
-          <div
-            id="panel-hw"
-            role="tabpanel"
-            aria-labelledby="tab-hw"
-            hidden={activeTab !== "hw"}
-          >
-            <div style={{ display: activeTab === "hw" ? "block" : "none" }}>
-              <HardwareView
-                onSeedFound={handleFoundSeed}
-                serialService={serialRef.current!}
+          {/* Status Bar */}
+          <footer className={styles.statusBar}>
+            <div className={styles.statusItem}>
+              <div
+                className={`${styles.indicator} ${
+                  isConnected ? styles.connected : ""
+                }`}
               />
+              {isConnected ? "DEVICE CONNECTED" : "NO DEVICE"}
             </div>
-          </div>
-
-          <div
-            id="panel-uds"
-            role="tabpanel"
-            aria-labelledby="tab-uds"
-            hidden={activeTab !== "uds"}
-          >
-            <div style={{ display: activeTab === "uds" ? "block" : "none" }}>
-              <UDSView serialService={serialRef.current!} />
+            <div className={styles.statusItem}>PROTOCOL: AUTO</div>
+            <div className={styles.statusItem} style={{ marginLeft: "auto" }}>
+              {new Date().toLocaleDateString()}
             </div>
-          </div>
+          </footer>
         </main>
       </div>
     </ToastProvider>

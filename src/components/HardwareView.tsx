@@ -1,24 +1,20 @@
 import { useState, useCallback, useEffect } from "react";
-import { Plug, Lock, Loader2, XCircle, CheckCircle2 } from "lucide-react";
+import { Plug, Lock, Loader2, XCircle, Zap, Search } from "lucide-react";
 import styles from "./View.module.css";
-import { SerialService, type ConnectionState } from "../services/SerialService";
+import { type ConnectionState } from "../services/SerialService";
+import type { HardwareService } from "../services/HardwareService";
+import { GM_MODULES } from "../data/modules";
 
 interface HardwareViewProps {
   onSeedFound: (seed: string) => void;
-  serialService: SerialService;
+  serialService: HardwareService;
 }
 
-/**
- * Format hex value for input fields
- */
 const formatHex = (val: string, maxBytes: number): string => {
   const clean = val.replace(/[^0-9A-Fa-f]/g, "").toUpperCase();
   return clean.slice(0, maxBytes * 2);
 };
 
-/**
- * Hardware view for direct ECU communication via Web Serial
- */
 export function HardwareView({
   onSeedFound,
   serialService,
@@ -30,39 +26,48 @@ export function HardwareView({
   const [ecuHeader, setEcuHeader] = useState("7E0");
   const [keyToUnlock, setKeyToUnlock] = useState("");
   const [isScanning, setIsScanning] = useState(false);
+  const [j2534Devices, setJ2534Devices] = useState<
+    Array<{ name: string; dll_path: string }>
+  >([]);
+  const [selectedDevice, setSelectedDevice] = useState("");
+
+  const isJ2534 = serialService && "listDevices" in serialService;
+
+  useEffect(() => {
+    if (isJ2534 && serialService.listDevices) {
+      serialService.listDevices().then((devices) => {
+        setJ2534Devices(devices);
+        if (devices.length > 0) setSelectedDevice(devices[0].dll_path);
+      });
+    }
+  }, [serialService, isJ2534]);
 
   const appendLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     setLogs((prev) => `${prev}[${timestamp}] ${message}\n`);
   }, []);
 
-  // Update handlers when component mounts
   useEffect(() => {
     serialService.setHandlers({
       onStateChange: (state) => {
         setConnectionState(state);
-        appendLog(`Connection: ${state}`);
+        appendLog(`Connection State: ${state}`);
       },
       onError: (error) => {
         appendLog(`ERROR: ${error.message}`);
       },
-      onData: () => {
-        // Raw data logging (optional)
-      },
+      onData: () => {},
     });
-
-    // Set initial state
     setConnectionState(serialService.state);
-
-    return () => {
-      // Ideally we don't disconnect on unmount if we want to share connection.
-    };
   }, [serialService, appendLog]);
 
   const handleConnect = async () => {
     try {
+      if (isJ2534 && selectedDevice && serialService.setDllPath) {
+        serialService.setDllPath(selectedDevice);
+      }
       await serialService.connect();
-      appendLog("Connected to serial device");
+      appendLog("Connected to device successfully.");
     } catch (e) {
       appendLog(
         `Connection failed: ${e instanceof Error ? e.message : String(e)}`
@@ -72,33 +77,31 @@ export function HardwareView({
 
   const handleDisconnect = async () => {
     await serialService.disconnect();
-    appendLog("Disconnected");
+    appendLog("Disconnected.");
   };
 
   const handleScan = async () => {
     if (!serialService.isConnected) {
-      appendLog("Not connected");
+      appendLog("Error: Not connected to hardware.");
       return;
     }
 
     setIsScanning(true);
-    appendLog("Sending GMLAN Seed Request...");
+    appendLog(`Sending Seed Request to ECU ${ecuHeader}...`);
 
     try {
       const result = await serialService.executeSeedRequest(ecuHeader);
       appendLog(result.log);
 
-      // Parse seed from response
       const seedMatch = /67\s*0?1\s*([0-9A-F]{2})\s*([0-9A-F]{2})/i.exec(
         result.seed
       );
 
       if (seedMatch) {
         const fullSeed = `${seedMatch[1]}${seedMatch[2]}`;
-        appendLog(`SUCCESS: Extracted Seed ${fullSeed}`);
+        appendLog(`SUCCESS: Found GMLAN Seed ${fullSeed}`);
         onSeedFound(fullSeed);
       } else {
-        // Try 5-byte SA015 seed
         const seed5Match =
           /67\s*0?1\s*([0-9A-F]{2})\s*([0-9A-F]{2})\s*([0-9A-F]{2})\s*([0-9A-F]{2})\s*([0-9A-F]{2})/i.exec(
             result.seed
@@ -106,57 +109,63 @@ export function HardwareView({
 
         if (seed5Match) {
           const fullSeed = `${seed5Match[1]}${seed5Match[2]}${seed5Match[3]}${seed5Match[4]}${seed5Match[5]}`;
-          appendLog(`SUCCESS: Extracted 5-byte Seed ${fullSeed}`);
+          appendLog(`SUCCESS: Found Global A Seed ${fullSeed}`);
           onSeedFound(fullSeed);
         } else {
-          appendLog("FAILED: No seed found in response");
-          appendLog(`Response was: ${result.seed}`);
+          appendLog("FAILED: No recognized seed in response.");
         }
       }
     } catch (e) {
-      appendLog(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      appendLog(
+        `Error reading seed: ${e instanceof Error ? e.message : String(e)}`
+      );
     } finally {
       setIsScanning(false);
     }
   };
 
+  const handleNetworkScan = async () => {
+    if (!serialService.isConnected) return;
+
+    setIsScanning(true);
+    appendLog("Starting Network Scan (Ping all modules)...");
+    let found = 0;
+
+    for (const mod of GM_MODULES) {
+      try {
+        await serialService.send(`ATSH ${mod.id}`, 200);
+        const resp = await serialService.send("3E 00", 300);
+        if (resp && (resp.includes("7E") || resp.includes("7F"))) {
+          appendLog(`[FOUND] ${mod.name} (${mod.id}) - ${resp}`);
+          found++;
+        }
+      } catch (e) {
+        // Ignore timeouts
+      }
+    }
+
+    appendLog(`Scan Complete. Found ${found} modules.`);
+    setIsScanning(false);
+    await serialService.send(`ATSH ${ecuHeader}`);
+  };
+
   const handleUnlock = async () => {
-    if (!serialService.isConnected) {
-      appendLog("Not connected");
-      return;
-    }
-
-    if (keyToUnlock.length !== 4 && keyToUnlock.length !== 10) {
-      alert(
-        "Key must be 4 hex characters (2 bytes) or 10 hex characters (5 bytes)"
-      );
-      return;
-    }
-
+    if (!serialService.isConnected) return;
     try {
       appendLog(`Sending Key ${keyToUnlock}...`);
-
       const result =
         keyToUnlock.length === 10
           ? await serialService.sendKey5Byte(keyToUnlock)
           : await serialService.sendKey(keyToUnlock);
 
       appendLog(result);
-
       if (result.includes("67 02") || result.includes("6702")) {
         appendLog("SUCCESS: ECU Unlocked!");
-        alert("ECU Unlocked!");
-      } else if (result.includes("7F 27 35") || result.includes("7F2735")) {
-        appendLog("FAILED: Invalid Key (NRC 0x35)");
-      } else if (result.includes("7F 27 36") || result.includes("7F2736")) {
-        appendLog("FAILED: Exceeded attempts - ECU locked (NRC 0x36)");
-      } else if (result.includes("7F 27 37") || result.includes("7F2737")) {
-        appendLog("FAILED: Required time delay not expired (NRC 0x37)");
       } else {
-        appendLog("FAILED: Incorrect Key or unexpected response");
+        appendLog("FAILED: Unlock failed (NRC or Bad Key).");
       }
     } catch (e) {
-      appendLog(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      appendLog(`Error: ${e}`);
     }
   };
 
@@ -164,132 +173,161 @@ export function HardwareView({
 
   return (
     <div className={styles.view}>
-      <div className={styles.formGroup}>
-        <label>ELM327 / OBD-II Connection (Web Serial)</label>
-        <p
-          style={{
-            fontSize: "0.85rem",
-            color: "var(--text-secondary)",
-            marginBottom: "0.5rem",
-          }}
-        >
-          <strong>Note:</strong> For J2534 devices (Tactrix, Mongoose), save a
-          log and use the <strong>Logs</strong> tab. Direct connection requires
-          a serial device (ELM327/STN).
-        </p>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: "1.5rem",
+        }}
+      >
+        {/* Left Column: Connection */}
+        <div className={styles.card}>
+          <h3>
+            <Plug size={18} /> Connection Settings
+          </h3>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-          {connectionState === "disconnected" ? (
+          <div className={styles.formGroup}>
+            <label>Interface Type</label>
+            <div
+              style={{
+                padding: "0.75rem",
+                background: "rgba(0,0,0,0.2)",
+                borderRadius: "6px",
+                color: "var(--text-secondary)",
+                fontSize: "0.9rem",
+              }}
+            >
+              {isJ2534
+                ? "J2534 PassThru (Native)"
+                : "ELM327 / OBDLink (Serial)"}
+            </div>
+          </div>
+
+          {isJ2534 && (
+            <div className={styles.formGroup}>
+              <label>Select Device</label>
+              <select
+                value={selectedDevice}
+                onChange={(e) => setSelectedDevice(e.target.value)}
+                disabled={isConnected}
+              >
+                {j2534Devices.length === 0 && (
+                  <option>No J2534 Devices Found</option>
+                )}
+                {j2534Devices.map((d) => (
+                  <option key={d.dll_path} value={d.dll_path}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {!isConnected ? (
             <button
+              className={styles.button}
               onClick={handleConnect}
-              className={styles.button}
-              style={{ flex: 1 }}
+              disabled={connectionState === "connecting"}
             >
-              <Plug size={20} />
-              Connect USB/Serial
-            </button>
-          ) : connectionState === "connecting" ? (
-            <button className={styles.button} disabled style={{ flex: 1 }}>
-              <Loader2 className="animate-spin" size={20} />
-              Connecting...
-            </button>
-          ) : connectionState === "connected" ? (
-            <button
-              onClick={handleDisconnect}
-              className={styles.button}
-              style={{ flex: 1, backgroundColor: "#ef4444" }}
-            >
-              <CheckCircle2 size={20} />
-              Disconnect
+              {connectionState === "connecting" ? (
+                <Loader2 className="animate-spin" />
+              ) : (
+                <Plug size={18} />
+              )}
+              {isJ2534 ? "Open Device" : "Connect Serial"}
             </button>
           ) : (
             <button
-              onClick={handleConnect}
-              className={styles.button}
-              style={{ flex: 1, backgroundColor: "#f59e0b" }}
+              className={`${styles.button} ${styles.danger}`}
+              onClick={handleDisconnect}
             >
-              <XCircle size={20} />
-              Reconnect
+              <XCircle size={18} /> Disconnect
             </button>
           )}
+
+          <div style={{ marginTop: "1.5rem" }}>
+            <button
+              className={styles.button}
+              onClick={handleNetworkScan}
+              disabled={!isConnected || isScanning}
+            >
+              {isScanning ? (
+                <Loader2 className="animate-spin" />
+              ) : (
+                <Search size={18} />
+              )}
+              Scan Network (Identify Modules)
+            </button>
+          </div>
         </div>
-      </div>
 
-      <div className={styles.formGroup}>
-        <label htmlFor="ecu-select">Target ECU:</label>
-        <select
-          id="ecu-select"
-          value={ecuHeader}
-          onChange={(e) => setEcuHeader(e.target.value)}
-        >
-          <option value="7E0">ECM (Engine Control Module) - 7E0</option>
-          <option value="7E1">TCM (Transmission) - 7E1</option>
-          <option value="7E2">FPCM (Fuel Pump) - 7E2</option>
-          <option value="241">BCM (Body Control) - 241</option>
-          <option value="244">EBCM (Electronic Brake) - 244</option>
-          <option value="24A">SDM (Airbag) - 24A</option>
-          <option value="248">IPC (Instrument Cluster) - 248</option>
-        </select>
-      </div>
+        {/* Right Column: Actions */}
+        <div className={styles.card}>
+          <h3>
+            <Zap size={18} /> Diagnostic Actions
+          </h3>
 
-      <button
-        onClick={handleScan}
-        disabled={!isConnected || isScanning}
-        className={styles.button}
-        style={{ marginBottom: "0" }}
-      >
-        {isScanning ? (
-          <Loader2 className="animate-spin" size={20} />
-        ) : (
-          <Lock size={20} />
-        )}
-        {isScanning ? "Reading..." : "Read Seed (27 01)"}
-      </button>
+          <div className={styles.formGroup}>
+            <label>Target Module (Header)</label>
+            <select
+              value={ecuHeader}
+              onChange={(e) => setEcuHeader(e.target.value)}
+            >
+              {GM_MODULES.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.id} - {m.name}
+                </option>
+              ))}
+            </select>
+          </div>
 
-      <div
-        className={styles.formGroup}
-        style={{
-          marginTop: "1rem",
-          borderTop: "1px solid var(--border-color)",
-          paddingTop: "1rem",
-        }}
-      >
-        <label htmlFor="unlock-key">Unlock (Send Key):</label>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
-          <input
-            id="unlock-key"
-            value={keyToUnlock}
-            onChange={(e) => setKeyToUnlock(formatHex(e.target.value, 5))}
-            placeholder="2-byte (A1B2) or 5-byte (0F8323EB68)"
-            maxLength={10}
-            autoComplete="off"
-            spellCheck={false}
-            style={{ flex: 1 }}
-          />
           <button
-            onClick={handleUnlock}
-            disabled={!isConnected || !keyToUnlock}
             className={styles.button}
-            style={{ marginTop: 0, width: "auto", minWidth: "100px" }}
+            onClick={handleScan}
+            disabled={!isConnected || isScanning}
           >
-            <Lock size={16} />
-            Unlock
+            {isScanning ? (
+              <Loader2 className="animate-spin" />
+            ) : (
+              <Lock size={18} />
+            )}
+            Read Seed (27 01)
           </button>
+
+          <div
+            style={{
+              margin: "1.5rem 0",
+              height: "1px",
+              background: "var(--border-glass)",
+            }}
+          />
+
+          <div className={styles.formGroup}>
+            <label>Key Input</label>
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <input
+                value={keyToUnlock}
+                onChange={(e) => setKeyToUnlock(formatHex(e.target.value, 5))}
+                placeholder="Key (e.g. A1B2)"
+              />
+              <button
+                className={styles.button}
+                style={{ width: "auto" }}
+                onClick={handleUnlock}
+                disabled={!isConnected}
+              >
+                Unlock
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div className={styles.resultArea} style={{ marginTop: "1rem" }}>
-        <label>Terminal Log:</label>
-        <pre
-          style={{
-            maxHeight: "250px",
-            overflowY: "auto",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-          }}
-        >
-          {logs || "Waiting for connection..."}
-        </pre>
+      <div className={styles.resultArea}>
+        <label>Live Terminal</label>
+        <div className={styles.terminal}>
+          {logs || "System Ready. Waiting for device..."}
+        </div>
       </div>
     </div>
   );

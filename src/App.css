@@ -1,50 +1,80 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap');
 
 :root {
-  --bg-color: #f3f4f6; /* Light Gray 100 */
-  --card-bg: #ffffff;
-  --text-primary: #111827; /* Gray 900 */
-  --text-secondary: #6b7280; /* Gray 500 */
-  --accent-color: #2563eb; /* Blue 600 */
-  --accent-hover: #1d4ed8; /* Blue 700 */
-  --border-color: #e5e7eb; /* Gray 200 */
-  --input-bg: #f9fafb; /* Gray 50 */
-  --input-border: #d1d5db; /* Gray 300 */
-  --radius: 8px;
-  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
-  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
-  --container-width: 480px;
-}
+    /* Cyberpunk / Automotive Palette */
+    --bg-base: #0f172a; /* Deep Slate - Main Background */
+    --bg-surface: #1e293b; /* Surface Slate */
+    --bg-surface-glass: rgba(30, 41, 59, 0.7); /* Glassy Surface */
 
-body.dark-mode {
-  --bg-color: #111827; /* Gray 900 */
-  --card-bg: #1f2937; /* Gray 800 */
-  --text-primary: #f9fafb; /* Gray 50 */
-  --text-secondary: #9ca3af; /* Gray 400 */
-  --accent-color: #3b82f6; /* Blue 500 */
-  --accent-hover: #60a5fa; /* Blue 400 */
-  --border-color: #374151; /* Gray 700 */
-  --input-bg: #111827; /* Gray 900 */
-  --input-border: #4b5563; /* Gray 600 */
+    /* Accents */
+    --accent-primary: #38bdf8; /* Neon Sky Blue */
+    --accent-glow: rgba(56, 189, 248, 0.5);
+    --accent-dim: rgba(56, 189, 248, 0.1);
+
+    /* Text */
+    --text-primary: #f1f5f9; /* Slate 100 */
+    --text-secondary: #94a3b8; /* Slate 400 */
+    --text-muted: #64748b; /* Slate 500 */
+
+    /* Borders */
+    --border-glass: rgba(255, 255, 255, 0.1);
+    --border-accent: rgba(56, 189, 248, 0.3);
+
+    /* Status */
+    --status-success: #10b981; /* Emerald */
+    --status-error: #ef4444; /* Red */
+    --status-warning: #f59e0b; /* Amber */
+
+    /* Dimensions */
+    --sidebar-width: 260px;
+    --radius-sm: 6px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+
+    /* Effects */
+    --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+    --backdrop-blur: blur(12px);
 }
 
 body {
-  font-family: 'Inter', -apple-system, sans-serif;
-  background-color: var(--bg-color);
-  color: var(--text-primary);
-  margin: 0;
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background-color 0.3s ease, color 0.3s ease;
-  padding: 1rem;
+    font-family: 'Outfit', 'Inter', sans-serif;
+    background-color: var(--bg-base);
+    color: var(--text-primary);
+    margin: 0;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    /* Rich dark gradient background */
+    background: radial-gradient(circle at 15% 50%, #1e1b4b 0%, #0f172a 50%, #020617 100%);
 }
 
-/* Reset */
-* {
-  box-sizing: border-box;
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
 }
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+/* Utilities */
+.glass-panel {
+    background: var(--bg-surface-glass);
+    backdrop-filter: var(--backdrop-blur);
+    -webkit-backdrop-filter: var(--backdrop-blur);
+    border: 1px solid var(--border-glass);
+    box-shadow: var(--shadow-glass);
+}
+
 
 /* Spinner Animation (Shared) */
 @keyframes spin {
