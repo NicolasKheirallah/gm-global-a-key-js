@@ -57,7 +57,14 @@ describe("GMLANEngine", () => {
     });
 
     it("should return null for unmatched key", () => {
-      const result = GMLANEngine.reverseEngineer(0x1234, 0x0000, table_gmlan);
+      const seed = 0x1234;
+      const results = GMLANEngine.bruteForceAll(seed, table_gmlan);
+      const keys = new Set(results.map((r) => r.key));
+      let missingKey = 0;
+      while (keys.has(missingKey) && missingKey <= 0xffff) {
+        missingKey++;
+      }
+      const result = GMLANEngine.reverseEngineer(seed, missingKey, table_gmlan);
       expect(result.algo).toBeNull();
     });
   });

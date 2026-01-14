@@ -3,7 +3,8 @@ import { Cpu, Lock, FileText, Plug, Activity, Layers } from "lucide-react";
 import styles from "./App.module.css";
 /* Global styles for resets only */
 import "./App.css";
-// import { useTheme } from "./hooks/useTheme"; // Deprecated - forcing Dark Mode
+import { useTheme } from "./hooks/useTheme";
+import { ThemeToggle } from "./components/ThemeToggle";
 import {
   GMLANView,
   SA015View,
@@ -31,6 +32,7 @@ const TABS: Array<{ id: TabId; label: string; icon: typeof Cpu }> = [
 ];
 
 function App() {
+  const { isDarkMode, toggleTheme } = useTheme();
   const [activeTab, setActiveTab] = useState<TabId>("hw");
   const [sharedSeed, setSharedSeed] = useState("");
   const [isConnected, setIsConnected] = useState(false);
@@ -118,7 +120,7 @@ function App() {
           {/* Header */}
           <header className={styles.header}>
             <div className={styles.headerTitle}>{activeTabLabel}</div>
-            {/* Future: User Profile / Settings */}
+            <ThemeToggle isDarkMode={isDarkMode} onToggle={toggleTheme} />
           </header>
 
           {/* Scrollable Area */}

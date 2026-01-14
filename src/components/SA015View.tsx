@@ -8,6 +8,8 @@ interface SA015ViewProps {
   sharedSeed: string;
 }
 
+type AlgoFormat = "hex" | "dec";
+
 /**
  * Format hex value for input fields
  */
@@ -16,12 +18,21 @@ const formatHex = (val: string, maxBytes: number): string => {
   return clean.slice(0, maxBytes * 2);
 };
 
+const formatDec = (val: string, maxDigits: number): string => {
+  const clean = val.replace(/\D/g, "");
+  return clean.slice(0, maxDigits);
+};
+
 /**
  * SA015 (5-byte) key calculator view
  */
 export function SA015View({ sharedSeed }: SA015ViewProps) {
   const [seed, setSeed] = useSessionStorage("sa015_seed", sharedSeed);
   const [algo, setAlgo] = useSessionStorage("sa015_algo", "");
+  const [algoFormat, setAlgoFormat] = useSessionStorage<AlgoFormat>(
+    "sa015_algo_format",
+    "hex"
+  );
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -40,6 +51,10 @@ export function SA015View({ sharedSeed }: SA015ViewProps) {
   };
 
   const handleAlgoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (algoFormat === "dec") {
+      setAlgo(formatDec(e.target.value, 5));
+      return;
+    }
     setAlgo(formatHex(e.target.value, 1));
   };
 
@@ -51,9 +66,13 @@ export function SA015View({ sharedSeed }: SA015ViewProps) {
       setLoading(true);
 
       const seedBytes = Utils.normalizeSeed(seed, 5);
-      const algoId = parseInt(algo, 16);
+      const algoId =
+        algoFormat === "dec" ? parseInt(algo, 10) : parseInt(algo, 16);
 
       if (isNaN(algoId)) throw new Error("Invalid Algorithm ID");
+      if (algoId < 0 || algoId > 0xffff) {
+        throw new Error("Algorithm ID must be 0-65535");
+      }
 
       // Use Web Worker for SA015 calculation
       const worker = new Worker(new URL("../worker.ts", import.meta.url), {
@@ -112,16 +131,27 @@ export function SA015View({ sharedSeed }: SA015ViewProps) {
       </div>
 
       <div className={styles.formGroup}>
-        <label htmlFor="sa015-algo">Algorithm ID (hex):</label>
-        <input
-          id="sa015-algo"
-          value={algo}
-          onChange={handleAlgoChange}
-          placeholder="87"
-          maxLength={2}
-          autoComplete="off"
-          spellCheck={false}
-        />
+        <label htmlFor="sa015-algo">Algorithm ID:</label>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          <input
+            id="sa015-algo"
+            value={algo}
+            onChange={handleAlgoChange}
+            placeholder={algoFormat === "dec" ? "135" : "87"}
+            maxLength={algoFormat === "dec" ? 5 : 2}
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <select
+            value={algoFormat}
+            onChange={(e) =>
+              setAlgoFormat(e.target.value as AlgoFormat)
+            }
+          >
+            <option value="hex">Hex</option>
+            <option value="dec">Dec</option>
+          </select>
+        </div>
       </div>
 
       <button

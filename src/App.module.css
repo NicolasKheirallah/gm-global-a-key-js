@@ -10,13 +10,20 @@
 /* Sidebar Styling */
 .sidebar {
     width: var(--sidebar-width);
-    background: rgba(15, 23, 42, 0.4);
-    backdrop-filter: blur(20px);
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: var(--backdrop-blur);
     border-right: 1px solid var(--border-glass);
+    box-shadow: 12px 0 30px rgba(18, 24, 22, 0.05);
     display: flex;
     flex-direction: column;
     padding: 1.5rem;
     z-index: 10;
+}
+
+/* Dark Mode Sidebar */
+:global(.dark-mode) .sidebar {
+    background: rgba(15, 20, 19, 0.92);
+    box-shadow: 12px 0 30px rgba(0, 0, 0, 0.3);
 }
 
 .brand {
@@ -26,11 +33,12 @@
 }
 
 .brand h1 {
-    font-size: 1.25rem;
-    font-weight: 700;
+    font-size: 1.35rem;
+    font-weight: 600;
     margin: 0;
-    background: linear-gradient(135deg, var(--text-primary) 0%, var(--accent-primary) 100%);
+    background: linear-gradient(135deg, var(--text-primary) 0%, var(--accent-primary) 80%);
     -webkit-background-clip: text;
+    background-clip: text;
     -webkit-text-fill-color: transparent;
     letter-spacing: -0.02em;
 }
@@ -41,7 +49,7 @@
     font-weight: 500;
     margin-top: 0.25rem;
     display: block;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
 }
 
@@ -57,7 +65,7 @@
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    padding: 0.85rem 1rem;
+    padding: 0.8rem 1rem;
     border-radius: var(--radius-md);
     color: var(--text-secondary);
     text-decoration: none;
@@ -70,15 +78,21 @@
 }
 
 .navItem:hover {
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--accent-dim);
     color: var(--text-primary);
 }
 
 .navItemActive {
-    background: rgba(56, 189, 248, 0.1);
+    background: var(--accent-dim);
     color: var(--accent-primary);
-    border-color: rgba(56, 189, 248, 0.2);
-    box-shadow: 0 0 20px rgba(56, 189, 248, 0.05);
+    border-color: var(--border-accent);
+    box-shadow: 0 8px 20px rgba(18, 24, 22, 0.06);
+}
+
+/* Dark Mode Nav Active */
+:global(.dark-mode) .navItemActive {
+    background: rgba(78, 205, 196, 0.12);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
 }
 
 .navIcon {
@@ -105,6 +119,13 @@
     align-items: center;
     justify-content: space-between;
     border-bottom: 1px solid var(--border-glass);
+    background: rgba(255, 255, 255, 0.6);
+    backdrop-filter: var(--backdrop-blur);
+}
+
+/* Dark Mode Header */
+:global(.dark-mode) .header {
+    background: rgba(15, 20, 19, 0.8);
 }
 
 .headerTitle {
@@ -119,11 +140,10 @@
 .headerTitle::before {
     content: '';
     display: block;
-    width: 4px;
-    height: 16px;
+    width: 6px;
+    height: 18px;
     background: var(--accent-primary);
     border-radius: 2px;
-    box-shadow: 0 0 10px var(--accent-primary);
 }
 
 .contentScroll {
@@ -146,15 +166,20 @@
 /* Status Bar (Bottom) */
 .statusBar {
     height: 32px;
-    background: rgba(15, 23, 42, 0.8);
+    background: rgba(255, 255, 255, 0.7);
     border-top: 1px solid var(--border-glass);
     display: flex;
     align-items: center;
     padding: 0 1rem;
     font-size: 0.75rem;
     color: var(--text-muted);
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     gap: 1.5rem;
+}
+
+/* Dark Mode Status Bar */
+:global(.dark-mode) .statusBar {
+    background: rgba(15, 20, 19, 0.9);
 }
 
 .statusItem {
@@ -174,3 +199,64 @@
     background: var(--status-success);
     box-shadow: 0 0 8px var(--status-success);
 }
+
+/* Theme Toggle */
+.themeToggle {
+    position: relative;
+    width: 56px;
+    height: 28px;
+    background: var(--bg-surface-glass);
+    border: 1px solid var(--border-glass);
+    border-radius: 14px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    display: flex;
+    align-items: center;
+    padding: 3px;
+}
+
+.themeToggle:hover {
+    border-color: var(--accent-primary);
+}
+
+.themeToggle:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+}
+
+.themeToggleThumb {
+    position: absolute;
+    width: 22px;
+    height: 22px;
+    background: var(--accent-primary);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    left: 3px;
+    z-index: 1;
+}
+
+.themeToggleDark .themeToggleThumb {
+    transform: translateX(28px);
+}
+
+.themeIconSlot {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    opacity: 0.5;
+}
+
+.themeIconSlot.sun {
+    left: 6px;
+}
+
+.themeIconSlot.moon {
+    right: 6px;
+}
+

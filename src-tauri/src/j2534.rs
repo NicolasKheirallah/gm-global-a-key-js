@@ -165,11 +165,10 @@ pub struct J2534Driver {
     iso_channel_id: Option<u32>,
     can_filter_ids: Vec<u32>,
     iso_filter_ids: Vec<u32>,
+    iso_fc_filter_id: Option<u32>,
 }
 
-// Helper to make moving Library easier if needed, though Arc is better
-unsafe impl Send for J2534Driver {}
-unsafe impl Sync for J2534Driver {}
+// Note: J2534Driver is wrapped in Arc<Mutex<>> in AppState for proper thread safety
 
 impl J2534Driver {
     pub unsafe fn new(dll_path: &str) -> Result<Self, J2534Error> {
@@ -181,6 +180,7 @@ impl J2534Driver {
             iso_channel_id: None,
             can_filter_ids: Vec::new(),
             iso_filter_ids: Vec::new(),
+            iso_fc_filter_id: None,
         })
     }
 
@@ -239,6 +239,53 @@ impl J2534Driver {
 
             let mut filter_id = 0;
             let res = func(channel_id, PASS_FILTER, &c_mask, &c_pattern, c_flow as *const CPassThruMsg, &mut filter_id);
+
+            if res != PASSTHRU_ERR_SUCCESS {
+                return Err(J2534Error::PassThruError(res));
+            }
+            Ok(filter_id)
+        }
+    }
+
+    /// Start a flow control filter for ISO-TP (ISO 15765) multi-frame messaging.
+    /// This is REQUIRED for proper multi-frame UDS communication.
+    /// - tx_id: The ID used by the tester to send requests (e.g., 0x7E0)
+    /// - rx_id: The ID used by the ECU to send responses (e.g., 0x7E8)
+    /// - block_size/st_min: ISO-TP flow control parameters
+    pub fn start_flow_control_filter(
+        &self,
+        channel_id: u32,
+        tx_id: u32,
+        rx_id: u32,
+        block_size: u8,
+        st_min: u8,
+        pad_value: Option<u8>,
+    ) -> Result<u32, J2534Error> {
+        unsafe {
+            let func: Symbol<unsafe extern "stdcall" fn(channel_id: u32, filter_type: u32, mask: *const CPassThruMsg, pattern: *const CPassThruMsg, flow_control: *const CPassThruMsg, filter_id: *mut u32) -> i32> =
+                self.lib.get(b"PassThruStartMsgFilter").map_err(|e| J2534Error::SymbolError(e.to_string()))?;
+
+            // For flow control filter, mask and pattern match the ECU response ID
+            // Flow control message uses the tester TX ID
+            let is_extended = rx_id > 0x7FF;
+            let mask_id = if is_extended { 0x1FFFFFFF } else { 0x7FF };
+            
+            let mask = PassThruMsg::new(ISO15765, mask_id, &[], 0);
+            let pattern = PassThruMsg::new(ISO15765, rx_id, &[], 0);
+            let mut fc_data = vec![0x30u8, block_size, st_min];
+            if let Some(pad) = pad_value {
+                while fc_data.len() < 8 {
+                    fc_data.push(pad);
+                }
+            }
+            let flow_control = PassThruMsg::new(ISO15765, tx_id, &fc_data, 0);
+
+            let c_mask = CPassThruMsg::from(&mask);
+            let c_pattern = CPassThruMsg::from(&pattern);
+            let c_flow = CPassThruMsg::from(&flow_control);
+
+            let mut filter_id = 0;
+            let res = func(channel_id, FLOW_CONTROL_FILTER, &c_mask, &c_pattern, &c_flow, &mut filter_id);
 
             if res != PASSTHRU_ERR_SUCCESS {
                 return Err(J2534Error::PassThruError(res));
@@ -364,6 +411,37 @@ impl J2534Driver {
         match protocol {
             ProtocolKind::Can => self.can_filter_ids = ids,
             ProtocolKind::Iso15765 => self.iso_filter_ids = ids,
+        }
+        Ok(())
+    }
+
+    pub fn set_flow_control_filter(
+        &mut self,
+        tx_id: u32,
+        rx_id: u32,
+        block_size: u8,
+        st_min: u8,
+        pad_value: Option<u8>,
+    ) -> Result<(), J2534Error> {
+        let channel_id = self.channel_id(ProtocolKind::Iso15765)?;
+        self.clear_flow_control_filter()?;
+
+        let filter_id = self.start_flow_control_filter(
+            channel_id,
+            tx_id,
+            rx_id,
+            block_size,
+            st_min,
+            pad_value,
+        )?;
+        self.iso_fc_filter_id = Some(filter_id);
+        Ok(())
+    }
+
+    pub fn clear_flow_control_filter(&mut self) -> Result<(), J2534Error> {
+        let channel_id = self.channel_id(ProtocolKind::Iso15765)?;
+        if let Some(filter_id) = self.iso_fc_filter_id.take() {
+            let _ = self.stop_msg_filter(channel_id, filter_id);
         }
         Ok(())
     }

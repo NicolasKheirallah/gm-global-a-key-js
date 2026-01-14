@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { type HardwareService } from "./HardwareService";
 import type { ConnectionState, SerialEventHandlers } from "./SerialService";
+import { UDSMessage } from "../core/uds";
 
 interface RxMessage {
   id: number;
@@ -32,6 +33,20 @@ export class J2534Service implements HardwareService {
   private responseFilters: Array<{ mask: number; pattern: number }> = [];
   private responseIds: number[] | null = null;
   private filtersKey: string = "";
+  private isoTpConfig: {
+    block_size?: number;
+    st_min?: number;
+    wft_max?: number;
+    pad_value?: number;
+  } = { block_size: 0, st_min: 0, wft_max: 0, pad_value: 0 };
+
+  // Seed/Key state machine
+  private lastSeed: Uint8Array | null = null;
+  private lastSeedTime: number = 0;
+  private lastSecurityLevel: number = 0x01;
+  private static readonly SEED_TIMEOUT_MS = 10000; // Seed valid for 10 seconds
+  private static readonly NRC_RESPONSE_PENDING = 0x78;
+  private static readonly P2_STAR_TIMEOUT_MS = 5000; // Extended timeout for NRC 0x78
 
   constructor() {}
 
@@ -124,6 +139,7 @@ export class J2534Service implements HardwareService {
       this.responseFilters = [{ mask, pattern: responseId }];
       this.responseIds = [responseId];
       await this.applyFilters();
+      await this.applyFlowControlFilter();
     }
   }
 
@@ -148,6 +164,29 @@ export class J2534Service implements HardwareService {
   ): Promise<string[]> {
     const result = await this.sendInternal(command, timeout, true);
     return result as string[];
+  }
+
+  private parseHexBytes(command: string): number[] {
+    const hex = command.replace(/\s/g, "");
+    if (hex.length % 2 !== 0) {
+      throw new Error("Invalid hex string");
+    }
+
+    const bytes: number[] = [];
+    for (let i = 0; i < hex.length; i += 2) {
+      const byte = parseInt(hex.substring(i, i + 2), 16);
+      if (Number.isNaN(byte)) {
+        throw new Error(`Invalid hex byte: ${hex.substring(i, i + 2)}`);
+      }
+      bytes.push(byte);
+    }
+    return bytes;
+  }
+
+  private formatBytes(bytes: number[]): string {
+    return bytes
+      .map((b) => b.toString(16).toUpperCase().padStart(2, "0"))
+      .join(" ");
   }
 
   private async sendInternal(
@@ -178,6 +217,7 @@ export class J2534Service implements HardwareService {
       }
       if (mode === "ISO") {
         this.transportMode = "isotp";
+        await this.applyFlowControlFilter();
         return collectAll ? ["OK"] : "OK";
       }
       return collectAll ? ["?"] : "?";
@@ -202,20 +242,12 @@ export class J2534Service implements HardwareService {
 
     // 5. Send RAW DATA
     // Input: "10 03" or "27 01"
-    const hex = cmd.replace(/\s/g, "");
-    if (hex.length % 2 !== 0) throw new Error("Invalid hex string");
-
-    const bytes = [];
-    for (let i = 0; i < hex.length; i += 2) {
-      bytes.push(parseInt(hex.substring(i, i + 2), 16));
-    }
+    const bytes = this.parseHexBytes(cmd);
 
     const protocol = await this.transmit(bytes);
     const msgs = await this.pollResponses(protocol, timeout, collectAll);
 
-    const responses = msgs.map((msg) =>
-      msg.data.map((b) => b.toString(16).toUpperCase().padStart(2, "0")).join(" ")
-    );
+    const responses = msgs.map((msg) => this.formatBytes(msg.data));
 
     if (responses.length === 0) {
       throw new Error("Timeout waiting for response");
@@ -224,9 +256,15 @@ export class J2534Service implements HardwareService {
     return collectAll ? responses : responses[0];
   }
 
+  /**
+   * Execute seed request for security access
+   * @param header - ECU header (e.g., "7E0" for ECM)
+   * @param securityLevel - UDS security level (seed level, odd)
+   */
   async executeSeedRequest(
-    header: string = "7E0"
-  ): Promise<{ seed: string; log: string }> {
+    header: string = "7E0",
+    securityLevel: number = 0x01
+  ): Promise<{ seed: string; log: string; seedBytes?: Uint8Array }> {
     const logEntries: string[] = [];
 
     const headerId = parseInt(header, 16);
@@ -238,16 +276,27 @@ export class J2534Service implements HardwareService {
       this.requestHeader = this.functionalHeader;
     }
 
-    const targetHeader =
-      this.addressingMode === "functional" ? "7DF" : header;
-    logEntries.push(`Configured Header: ${targetHeader}`);
+    const targetHeader = this.addressingMode === "functional" ? "7DF" : header;
+    const normalizedLevel = UDSMessage.normalizeSeedLevel(securityLevel);
+    logEntries.push(
+      `Configured Header: ${targetHeader}, Security Level: 0x${normalizedLevel
+        .toString(16)
+        .toUpperCase()}`
+    );
 
     // Mode 1: Diagnostic Session (optional but good practice)
     // 10 03 (Extended) or 10 01 (Default)
     // Some modules require 10 03 before Seed Request
+    const responseId =
+      this.addressingMode === "functional"
+        ? (this.currentHeader + 8) &
+          (this.currentHeader > 0x7ff ? 0x1fffffff : 0x7ff)
+        : null;
+
     try {
-      const resp1 = await this.withTemporaryRequestHeader(
+      const resp1 = await this.withTemporaryRequestHeaderAndFilters(
         this.currentHeader,
+        responseId,
         () => this.send("10 03")
       );
       logEntries.push(`TX: 10 03 -> RX: ${resp1}`);
@@ -255,35 +304,160 @@ export class J2534Service implements HardwareService {
       logEntries.push(`TX: 10 03 -> Error/Timeout (skipping)`);
     }
 
-    // Mode 27: Request Seed
-    // 27 01
-    const seedResp = await this.withTemporaryRequestHeader(
+    // Mode 27: Request Seed with specified security level
+    const seedReq = UDSMessage.buildSeedRequest(normalizedLevel);
+    const seedReqHex = UDSMessage.formatBytes(seedReq);
+    const seedResp = await this.withTemporaryRequestHeaderAndFilters(
       this.currentHeader,
-      () => this.send("27 01")
+      responseId,
+      () => this.send(seedReqHex)
     );
-    logEntries.push(`TX: 27 01 -> RX: ${seedResp}`);
+    logEntries.push(`TX: ${seedReqHex} -> RX: ${seedResp}`);
 
-    return { seed: seedResp, log: logEntries.join("\n") };
+    const seedFrame = UDSMessage.parseHex(seedResp);
+    const seedBytes = UDSMessage.parseSecuritySeedResponse(
+      seedFrame,
+      normalizedLevel
+    );
+
+    // Store seed state for validation in sendKey
+    this.lastSecurityLevel = normalizedLevel;
+    this.lastSeedTime = Date.now();
+    this.lastSeed = seedBytes;
+
+    return { seed: seedResp, log: logEntries.join("\n"), seedBytes };
   }
 
-  async sendKey(key: string): Promise<string> {
-    const cmd = `27 02 ${key.substring(0, 2)} ${key.substring(2, 4)}`;
-    const resp = await this.withTemporaryRequestHeader(
+  async requestSeed(
+    level: number,
+    header?: string
+  ): Promise<{ seed: Uint8Array; response: string }> {
+    const headerId = header ? parseInt(header, 16) : NaN;
+    if (!Number.isNaN(headerId)) {
+      await this.setHeader(headerId);
+    }
+
+    const normalizedLevel = UDSMessage.normalizeSeedLevel(level);
+    const req = UDSMessage.buildSeedRequest(normalizedLevel);
+    const reqHex = UDSMessage.formatBytes(req);
+
+    const responseId =
+      this.addressingMode === "functional"
+        ? (this.currentHeader + 8) &
+          (this.currentHeader > 0x7ff ? 0x1fffffff : 0x7ff)
+        : null;
+
+    const resp = await this.withTemporaryRequestHeaderAndFilters(
       this.currentHeader,
-      () => this.send(cmd)
+      responseId,
+      () => this.send(reqHex)
     );
-    return `TX: ${cmd} -> RX: ${resp}`;
+
+    const respBytes = UDSMessage.parseHex(resp);
+    const seed = UDSMessage.parseSecuritySeedResponse(
+      respBytes,
+      normalizedLevel
+    );
+
+    this.lastSecurityLevel = normalizedLevel;
+    this.lastSeedTime = Date.now();
+    this.lastSeed = seed;
+
+    return { seed, response: resp };
   }
 
-  async sendKey5Byte(key: string): Promise<string> {
-    const bytes = [];
-    for (let i = 0; i < 10; i += 2) bytes.push(key.substring(i, i + 2));
-    const cmd = `27 02 ${bytes.join(" ")}`;
-    const resp = await this.withTemporaryRequestHeader(
+  /**
+   * Send 2-byte GMLAN key
+   * @throws Error if seed request was not made recently
+   */
+  async sendKey(key: string, level?: number): Promise<string> {
+    this.validateKeyRequest();
+    const seedLevel =
+      level !== undefined
+        ? UDSMessage.normalizeSeedLevel(level)
+        : this.lastSecurityLevel;
+
+    if (seedLevel !== this.lastSecurityLevel) {
+      throw new Error(
+        "Security level mismatch - request seed for this level first"
+      );
+    }
+
+    const keyBytes = UDSMessage.parseHex(key);
+    const req = UDSMessage.buildKeyRequest(seedLevel, keyBytes);
+    const reqHex = UDSMessage.formatBytes(req);
+
+    const responseId =
+      this.addressingMode === "functional"
+        ? (this.currentHeader + 8) &
+          (this.currentHeader > 0x7ff ? 0x1fffffff : 0x7ff)
+        : null;
+
+    const resp = await this.withTemporaryRequestHeaderAndFilters(
       this.currentHeader,
-      () => this.send(cmd)
+      responseId,
+      () => this.send(reqHex)
     );
-    return `TX: ${cmd} -> RX: ${resp}`;
+    const respBytes = UDSMessage.parseHex(resp);
+    if (!UDSMessage.parseSecurityKeyResponse(respBytes, seedLevel)) {
+      throw new Error("Key rejected or unexpected response");
+    }
+
+    this.lastSeed = null; // Invalidate seed after use
+    return `TX: ${reqHex} -> RX: ${resp}`;
+  }
+
+  /**
+   * Send 5-byte Global A key
+   * @throws Error if seed request was not made recently
+   */
+  async sendKey5Byte(key: string, level?: number): Promise<string> {
+    this.validateKeyRequest();
+    const seedLevel =
+      level !== undefined
+        ? UDSMessage.normalizeSeedLevel(level)
+        : this.lastSecurityLevel;
+
+    if (seedLevel !== this.lastSecurityLevel) {
+      throw new Error(
+        "Security level mismatch - request seed for this level first"
+      );
+    }
+
+    const keyBytes = UDSMessage.parseHex(key);
+    const req = UDSMessage.buildKeyRequest(seedLevel, keyBytes);
+    const reqHex = UDSMessage.formatBytes(req);
+
+    const responseId =
+      this.addressingMode === "functional"
+        ? (this.currentHeader + 8) &
+          (this.currentHeader > 0x7ff ? 0x1fffffff : 0x7ff)
+        : null;
+
+    const resp = await this.withTemporaryRequestHeaderAndFilters(
+      this.currentHeader,
+      responseId,
+      () => this.send(reqHex)
+    );
+    const respBytes = UDSMessage.parseHex(resp);
+    if (!UDSMessage.parseSecurityKeyResponse(respBytes, seedLevel)) {
+      throw new Error("Key rejected or unexpected response");
+    }
+
+    this.lastSeed = null; // Invalidate seed after use
+    return `TX: ${reqHex} -> RX: ${resp}`;
+  }
+
+  private validateKeyRequest(): void {
+    if (!this.lastSeed) {
+      throw new Error(
+        "No seed request pending - call executeSeedRequest first"
+      );
+    }
+    if (Date.now() - this.lastSeedTime > J2534Service.SEED_TIMEOUT_MS) {
+      this.lastSeed = null;
+      throw new Error("Seed request expired - request a new seed");
+    }
   }
 
   async setResponseFilters(
@@ -320,6 +494,8 @@ export class J2534Service implements HardwareService {
   }): Promise<void> {
     try {
       await invoke("set_isotp_config", config);
+      this.isoTpConfig = { ...this.isoTpConfig, ...config };
+      await this.applyFlowControlFilter();
     } catch (e) {
       console.warn("Failed to set ISO-TP config", e);
     }
@@ -389,23 +565,14 @@ export class J2534Service implements HardwareService {
     command: string,
     timeout: number = 2000
   ): Promise<
-    Record<
-      string,
-      { id: number; responses: string[]; timestamps: number[] }
-    >
+    Record<string, { id: number; responses: string[]; timestamps: number[] }>
   > {
     const cmd = command.trim().toUpperCase();
     if (cmd.startsWith("AT")) {
       return {};
     }
 
-    const hex = cmd.replace(/\s/g, "");
-    if (hex.length % 2 !== 0) throw new Error("Invalid hex string");
-
-    const bytes = [];
-    for (let i = 0; i < hex.length; i += 2) {
-      bytes.push(parseInt(hex.substring(i, i + 2), 16));
-    }
+    const bytes = this.parseHexBytes(cmd);
 
     const protocol = await this.transmit(bytes);
     const msgs = await this.pollResponses(protocol, timeout, true);
@@ -420,9 +587,7 @@ export class J2534Service implements HardwareService {
       if (!grouped[key]) {
         grouped[key] = { id: msg.id, responses: [], timestamps: [] };
       }
-      grouped[key].responses.push(
-        msg.data.map((b) => b.toString(16).toUpperCase().padStart(2, "0")).join(" ")
-      );
+      grouped[key].responses.push(this.formatBytes(msg.data));
       grouped[key].timestamps.push(msg.timestamp);
     }
 
@@ -451,7 +616,7 @@ export class J2534Service implements HardwareService {
     timeout: number,
     collectAll: boolean
   ): Promise<RxMessage[]> {
-    const startTime = Date.now();
+    let startTime = Date.now();
     const responses: RxMessage[] = [];
 
     while (Date.now() - startTime < timeout) {
@@ -467,6 +632,19 @@ export class J2534Service implements HardwareService {
             : msgs;
 
           for (const msg of filtered) {
+            // Check for NRC 0x78 (Response Pending) - ISO 14229
+            // Format: 7F <SID> 78
+            if (
+              msg.data.length >= 3 &&
+              msg.data[0] === 0x7f &&
+              msg.data[2] === J2534Service.NRC_RESPONSE_PENDING
+            ) {
+              // Extend timeout by P2* (5 seconds) and continue waiting
+              startTime = Date.now();
+              timeout = J2534Service.P2_STAR_TIMEOUT_MS;
+              continue;
+            }
+
             responses.push(msg);
             if (!collectAll) {
               return responses;
@@ -509,16 +687,55 @@ export class J2534Service implements HardwareService {
     }
   }
 
-  private async withTemporaryRequestHeader<T>(
+  private async applyFlowControlFilter(): Promise<void> {
+    if (this.transportMode !== "isotp") return;
+    if (this.addressingMode !== "physical") return;
+
+    const mask = this.currentHeader > 0x7ff ? 0x1fffffff : 0x7ff;
+    const responseId = (this.currentHeader + 8) & mask;
+
+    try {
+      await invoke("set_flow_control_filter", {
+        tx_id: this.currentHeader,
+        rx_id: responseId,
+        block_size: this.isoTpConfig.block_size ?? 0,
+        st_min: this.isoTpConfig.st_min ?? 0,
+        pad_value: this.isoTpConfig.pad_value ?? undefined,
+      });
+    } catch (e) {
+      console.warn("Failed to set ISO-TP flow control filter", e);
+    }
+  }
+
+  private async withTemporaryRequestHeaderAndFilters<T>(
     header: number,
+    responseId: number | null,
     fn: () => Promise<T>
   ): Promise<T> {
-    const previous = this.requestHeader;
+    const prevHeader = this.requestHeader;
+    const prevFilters = this.responseFilters;
+    const prevIds = this.responseIds;
+
     this.requestHeader = header;
+
+    if (responseId !== null) {
+      const mask = responseId > 0x7ff ? 0x1fffffff : 0x7ff;
+      this.responseFilters = [{ mask, pattern: responseId }];
+      this.responseIds = [responseId];
+      this.filtersKey = "";
+      await this.applyFilters();
+    }
+
     try {
       return await fn();
     } finally {
-      this.requestHeader = previous;
+      this.requestHeader = prevHeader;
+      if (responseId !== null) {
+        this.responseFilters = prevFilters;
+        this.responseIds = prevIds;
+        this.filtersKey = "";
+        await this.applyFilters();
+      }
     }
   }
 }

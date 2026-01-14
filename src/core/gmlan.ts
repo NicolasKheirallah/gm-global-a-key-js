@@ -34,45 +34,9 @@ export class GMLANError extends Error {
 }
 
 export class GMLANEngine {
-  // Valid opcodes set for O(1) lookup
-  private static readonly VALID_OPCODES: Set<number> = new Set([
-    GMLAN_OPCODES.BYTE_SWAP,
-    GMLAN_OPCODES.ADD_HL,
-    GMLAN_OPCODES.COMPLEMENT,
-    GMLAN_OPCODES.AND_LH,
-    GMLAN_OPCODES.ROL,
-    GMLAN_OPCODES.OR_HL,
-    GMLAN_OPCODES.ROR,
-    GMLAN_OPCODES.ADD_LH,
-    GMLAN_OPCODES.SWAP_ADD,
-    GMLAN_OPCODES.SUB_HL,
-    GMLAN_OPCODES.SUB_LH,
-  ]);
-
   // Helper for 16-bit truncation
   private static W(val: number): number {
     return val & 0xffff;
-  }
-
-  /**
-   * Validates that an opcode is recognized
-   */
-  private static validateOpcode(
-    code: number,
-    algo: number,
-    step: number
-  ): void {
-    if (!this.VALID_OPCODES.has(code)) {
-      throw new GMLANError(
-        `Unknown opcode 0x${code
-          .toString(16)
-          .toUpperCase()} at step ${step} for algorithm 0x${algo
-          .toString(16)
-          .toUpperCase()}`,
-        "INVALID_OPCODE",
-        { opcode: code, algorithm: algo, step }
-      );
-    }
   }
 
   /**
@@ -89,6 +53,22 @@ export class GMLANEngine {
   }
 
   /**
+   * Detect table format and return stride/operation count
+   * Legacy format: 13-byte stride, 4 operations
+   * Extended format: 16-byte stride, 5 operations
+   */
+  private static getTableFormat(tableLength: number): {
+    stride: number;
+    opCount: number;
+  } {
+    // Heuristic: if table is divisible by 16 and large enough, use 16-byte stride
+    if (tableLength >= 4096 && tableLength % 16 === 0) {
+      return { stride: 16, opCount: 5 };
+    }
+    return { stride: 13, opCount: 4 };
+  }
+
+  /**
    * Validates algorithm ID
    */
   private static validateAlgo(algo: number, tableLength: number): void {
@@ -101,14 +81,15 @@ export class GMLANEngine {
     }
 
     if (algo !== 0) {
-      const idx = algo * 13;
-      if (idx + 12 >= tableLength) {
+      const { stride, opCount } = this.getTableFormat(tableLength);
+      const idx = algo * stride;
+      if (idx + opCount * 3 > tableLength) {
         throw new GMLANError(
           `Algorithm ${algo} (0x${algo
             .toString(16)
             .toUpperCase()}) out of bounds for table (size ${tableLength})`,
           "TABLE_BOUNDS",
-          { algo, tableLength, requiredIndex: idx + 12 }
+          { algo, tableLength, requiredIndex: idx + opCount * 3 }
         );
       }
     }
@@ -200,15 +181,18 @@ export class GMLANEngine {
       return this.W(~seed_word);
     }
 
-    let idx = algo * 13;
+    const { stride, opCount } = this.getTableFormat(table.length);
+    let idx = algo * stride;
 
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < opCount; i++) {
       const code = table[idx];
       const hh = table[idx + 1];
       const ll = table[idx + 2];
 
-      // Validate opcode before processing
-      this.validateOpcode(code, algo, i);
+      // Stop early if opcode is 0x00 (NOP/end marker)
+      if (code === 0x00) {
+        break;
+      }
 
       switch (code) {
         case GMLAN_OPCODES.BYTE_SWAP:
@@ -244,7 +228,9 @@ export class GMLANEngine {
         case GMLAN_OPCODES.SUB_LH:
           seed_word = this.op_f8(seed_word, hh, ll);
           break;
-        // No default needed - validateOpcode already threw if invalid
+        default:
+          // Unknown opcode: treat as NOP for parity with gmseedcalc
+          break;
       }
       idx += 3;
     }
@@ -261,19 +247,23 @@ export class GMLANEngine {
     algo: number | null;
     sequence: Array<{ op: number; hh: number; ll: number }> | null;
   } {
+    const { stride, opCount } = this.getTableFormat(table.length);
+
     for (let algo = 1; algo < maxAlgorithms; algo++) {
-      const idx = algo * 13;
-      if (idx + 12 >= table.length) break;
+      const idx = algo * stride;
+      if (idx + opCount * 3 > table.length) break;
 
       try {
         const res = this.getKey(seed, algo, table);
         if (res === targetKey) {
           // Reconstruct sequence
           const sequence = [];
-          for (let step = 0; step < 4; step++) {
+          for (let step = 0; step < opCount; step++) {
             const s_idx = idx + step * 3;
+            const opcode = table[s_idx];
+            if (opcode === 0x00) break;
             sequence.push({
-              op: table[s_idx],
+              op: opcode,
               hh: table[s_idx + 1],
               ll: table[s_idx + 2],
             });
@@ -291,9 +281,10 @@ export class GMLANEngine {
     seed: number,
     table: Uint8Array
   ): Array<{ algo: number; key: number }> {
+    const { stride } = this.getTableFormat(table.length);
     const results = [];
-    const limit = Math.floor(table.length / 13);
-    for (let algo = 1; algo < limit; algo++) {
+    const limit = Math.floor(table.length / stride);
+    for (let algo = 0; algo < limit; algo++) {
       try {
         const key = this.getKey(seed, algo, table);
         results.push({ algo, key });
@@ -302,5 +293,165 @@ export class GMLANEngine {
       }
     }
     return results;
+  }
+
+  // ============================================================
+  // RUST BACKEND METHODS (Source of Truth)
+  // These methods call the high-performance Rust implementation
+  // via Tauri IPC. They fall back to TypeScript in browser mode.
+  // ============================================================
+
+  private static _isTauri: boolean | null = null;
+
+  /**
+   * Check if running in Tauri desktop environment
+   */
+  static isTauriEnvironment(): boolean {
+    if (this._isTauri === null) {
+      this._isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+    }
+    return this._isTauri;
+  }
+
+  /**
+   * Calculate key using Rust backend (source of truth)
+   * Falls back to TypeScript implementation in browser mode
+   * @param seed - 16-bit seed value
+   * @param algo - Algorithm ID (0-255)
+   * @param table - Table for fallback (optional if in Tauri)
+   */
+  static async getKeyAsync(
+    seed: number,
+    algo: number,
+    table?: Uint8Array
+  ): Promise<number> {
+    if (this.isTauriEnvironment()) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        return await invoke<number>("calculate_gmlan_key", { seed, algo });
+      } catch (e) {
+        console.warn("Rust GMLAN call failed, falling back to TypeScript:", e);
+      }
+    }
+
+    // Fallback to TypeScript implementation
+    if (!table) {
+      const { table_gmlan } = await import("./tables");
+      return this.getKey(seed, algo, table_gmlan);
+    }
+    return this.getKey(seed, algo, table);
+  }
+
+  /**
+   * Reverse engineer algorithm using Rust backend (source of truth)
+   * Falls back to TypeScript implementation in browser mode
+   * @param seed - 16-bit seed value
+   * @param targetKey - Known key to match
+   * @param maxAlgorithms - Max algorithms to try
+   * @param table - Table for fallback (optional if in Tauri)
+   */
+  static async reverseEngineerAsync(
+    seed: number,
+    targetKey: number,
+    maxAlgorithms: number = 256,
+    table?: Uint8Array
+  ): Promise<{
+    algo: number | null;
+    sequence: Array<{ op: number; hh: number; ll: number }> | null;
+  }> {
+    if (this.isTauriEnvironment()) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const result = await invoke<{
+          algo: number | null;
+          sequence: Array<{ opcode: number; hh: number; ll: number }> | null;
+        }>("reverse_engineer_gmlan", {
+          seed,
+          targetKey,
+          maxAlgorithms,
+        });
+
+        // Map Rust struct field names to TypeScript convention
+        return {
+          algo: result.algo,
+          sequence:
+            result.sequence?.map((s) => ({
+              op: s.opcode,
+              hh: s.hh,
+              ll: s.ll,
+            })) ?? null,
+        };
+      } catch (e) {
+        console.warn(
+          "Rust reverse engineer failed, falling back to TypeScript:",
+          e
+        );
+      }
+    }
+
+    // Fallback to TypeScript implementation
+    if (!table) {
+      const { table_gmlan } = await import("./tables");
+      return this.reverseEngineer(seed, targetKey, table_gmlan, maxAlgorithms);
+    }
+    return this.reverseEngineer(seed, targetKey, table, maxAlgorithms);
+  }
+
+  /**
+   * Brute force all algorithms using Rust backend (source of truth)
+   * Falls back to TypeScript implementation in browser mode
+   * @param seed - 16-bit seed value
+   * @param table - Table for fallback (optional if in Tauri)
+   */
+  static async bruteForceAllAsync(
+    seed: number,
+    table?: Uint8Array
+  ): Promise<Array<{ algo: number; key: number }>> {
+    if (this.isTauriEnvironment()) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        return await invoke<Array<{ algo: number; key: number }>>(
+          "brute_force_all_gmlan",
+          { seed }
+        );
+      } catch (e) {
+        console.warn("Rust brute force failed, falling back to TypeScript:", e);
+      }
+    }
+
+    // Fallback to TypeScript implementation
+    if (!table) {
+      const { table_gmlan } = await import("./tables");
+      return this.bruteForceAll(seed, table_gmlan);
+    }
+    return this.bruteForceAll(seed, table);
+  }
+
+  /**
+   * Find matching algorithms for a seed/key pair using Rust backend
+   * @param seed - 16-bit seed value
+   * @param knownKey - Known key to match
+   */
+  static async findMatchingAlgorithmsAsync(
+    seed: number,
+    knownKey: number
+  ): Promise<number[]> {
+    if (this.isTauriEnvironment()) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const hexAlgos = await invoke<string[]>("brute_force_gmlan_key", {
+          seed,
+          knownKey,
+        });
+        return hexAlgos.map((h) => parseInt(h, 16));
+      } catch (e) {
+        console.warn("Rust brute force failed, falling back to TypeScript:", e);
+      }
+    }
+
+    // Fallback: use TypeScript bruteForceAll and filter
+    const { table_gmlan } = await import("./tables");
+    const results = this.bruteForceAll(seed, table_gmlan);
+    return results.filter((r) => r.key === knownKey).map((r) => r.algo);
   }
 }

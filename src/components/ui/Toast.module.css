@@ -9,17 +9,18 @@
 }
 
 .toast {
-  background-color: var(--card-bg, #ffffff);
-  color: var(--text-color, #333333);
+  background-color: var(--bg-surface, #ffffff);
+  color: var(--text-primary, #1d2321);
   padding: 1rem;
   border-radius: 6px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 12px 28px rgba(18, 24, 22, 0.12);
   display: flex;
   align-items: center;
   gap: 0.75rem;
   min-width: 300px;
   max-width: 400px;
   border-left: 4px solid transparent;
+  border: 1px solid var(--border-glass, rgba(18, 24, 22, 0.08));
   animation: slideIn 0.3s ease-out forwards;
   position: relative;
   overflow: hidden;
@@ -37,19 +38,19 @@
 }
 
 .toast.info {
-  border-left-color: #3b82f6;
+  border-left-color: #3f7b86;
 }
 
 .toast.success {
-  border-left-color: #22c55e;
+  border-left-color: #2f8f73;
 }
 
 .toast.warning {
-  border-left-color: #f59e0b;
+  border-left-color: #b07a2a;
 }
 
 .toast.error {
-  border-left-color: #ef4444;
+  border-left-color: #c94f4f;
 }
 
 .content {
@@ -72,13 +73,4 @@
 .closeButton:hover {
   opacity: 1;
   background-color: transparent;
-}
-
-/* Dark mode support - implicit via CSS variables if defined in global */
-@media (prefers-color-scheme: dark) {
-  .toast {
-    background-color: #1f2937;
-    color: #f3f4f6;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-  }
 }

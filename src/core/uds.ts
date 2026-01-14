@@ -222,6 +222,50 @@ export interface SecurityAccessState {
  */
 export class UDSMessage {
   /**
+   * Validate security access level range (0x01 - 0x7E)
+   */
+  static validateSecurityLevel(level: number): void {
+    if (!Number.isInteger(level)) {
+      throw new Error(`Security level must be an integer, got ${level}`);
+    }
+    if (level < 0x01 || level > 0x7e) {
+      throw new Error(
+        `Security level out of range: 0x01-0x7E, got 0x${level
+          .toString(16)
+          .toUpperCase()}`
+      );
+    }
+  }
+
+  /**
+   * Normalize a seed level (RequestSeed) to odd value
+   */
+  static normalizeSeedLevel(level: number): number {
+    this.validateSecurityLevel(level);
+    return level % 2 === 1 ? level : level - 1;
+  }
+
+  /**
+   * Normalize a key level (SendKey) to even value
+   */
+  static normalizeKeyLevel(level: number): number {
+    this.validateSecurityLevel(level);
+    return level % 2 === 0 ? level : level + 1;
+  }
+
+  /**
+   * Check if response is NRC 0x78 (Response Pending)
+   */
+  static isResponsePending(response: Uint8Array, expectedSid?: number): boolean {
+    return (
+      response.length >= 3 &&
+      response[0] === 0x7f &&
+      (expectedSid === undefined || response[1] === expectedSid) &&
+      response[2] === NRC.REQUEST_CORRECTLY_RECEIVED_RESPONSE_PENDING
+    );
+  }
+
+  /**
    * Parse a response and check for negative response
    * @param response - Raw response bytes
    * @param expectedSid - Expected service ID
@@ -272,9 +316,14 @@ export class UDSMessage {
       throw new Error("Security seed response too short");
     }
 
-    if (parsed[1] !== level) {
+    const expectedLevel = this.normalizeSeedLevel(level);
+    if ((parsed[1] & 0x7f) !== expectedLevel) {
       throw new Error(
-        `Security level mismatch: expected ${level}, got ${parsed[1]}`
+        `Security level mismatch: expected 0x${expectedLevel
+          .toString(16)
+          .toUpperCase()}, got 0x${(parsed[1] & 0x7f)
+          .toString(16)
+          .toUpperCase()}`
       );
     }
 
@@ -292,11 +341,11 @@ export class UDSMessage {
     response: Uint8Array,
     level: number
   ): boolean {
-    const keyLevel = level + 1; // Key level is seed level + 1
+    const keyLevel = this.normalizeKeyLevel(level);
     const parsed = this.parseResponse(response, UDS_SID.SECURITY_ACCESS);
 
     // Response format: 67 <level>
-    if (parsed.length >= 2 && parsed[1] === keyLevel) {
+    if (parsed.length >= 2 && (parsed[1] & 0x7f) === keyLevel) {
       return true;
     }
 
@@ -308,8 +357,13 @@ export class UDSMessage {
    * @param level - Security level
    * @returns Request bytes
    */
-  static buildSeedRequest(level: number): Uint8Array {
-    return new Uint8Array([UDS_SID.SECURITY_ACCESS, level]);
+  static buildSeedRequest(
+    level: number,
+    suppressPositiveResponse: boolean = false
+  ): Uint8Array {
+    const seedLevel = this.normalizeSeedLevel(level) & 0x7f;
+    const subFunction = seedLevel | (suppressPositiveResponse ? 0x80 : 0x00);
+    return new Uint8Array([UDS_SID.SECURITY_ACCESS, subFunction]);
   }
 
   /**
@@ -318,11 +372,16 @@ export class UDSMessage {
    * @param key - Key bytes
    * @returns Request bytes
    */
-  static buildKeyRequest(level: number, key: Uint8Array): Uint8Array {
-    const keyLevel = level + 1; // Key level is seed level + 1
+  static buildKeyRequest(
+    level: number,
+    key: Uint8Array,
+    suppressPositiveResponse: boolean = false
+  ): Uint8Array {
+    const keyLevel = this.normalizeKeyLevel(level) & 0x7f;
+    const subFunction = keyLevel | (suppressPositiveResponse ? 0x80 : 0x00);
     const request = new Uint8Array(2 + key.length);
     request[0] = UDS_SID.SECURITY_ACCESS;
-    request[1] = keyLevel;
+    request[1] = subFunction;
     request.set(key, 2);
     return request;
   }
@@ -380,6 +439,158 @@ export class UDSMessage {
       request.set(optionRecord, 4);
     }
     return request;
+  }
+
+  /**
+   * Build Clear Diagnostic Information (0x14) request
+   * @param groupOfDTC - DTC group (0xFFFFFF = all DTCs)
+   */
+  static buildClearDiagnosticInformation(
+    groupOfDTC: number = 0xffffff
+  ): Uint8Array {
+    return new Uint8Array([
+      UDS_SID.CLEAR_DIAGNOSTIC_INFORMATION,
+      (groupOfDTC >> 16) & 0xff,
+      (groupOfDTC >> 8) & 0xff,
+      groupOfDTC & 0xff,
+    ]);
+  }
+
+  /**
+   * Build Read DTC Information (0x19) request
+   * @param subFunction - Report type (e.g., 0x02 = by status mask)
+   * @param dtcStatusMask - Status mask for filtering
+   */
+  static buildReadDTCInformation(
+    subFunction: number,
+    dtcStatusMask: number = 0xff
+  ): Uint8Array {
+    return new Uint8Array([
+      UDS_SID.READ_DTC_INFORMATION,
+      subFunction,
+      dtcStatusMask,
+    ]);
+  }
+
+  /**
+   * Build Read Memory By Address (0x23) request
+   * @param address - Memory address to read
+   * @param length - Number of bytes to read
+   * @param addressSize - Bytes for address (1-4, default 4)
+   * @param lengthSize - Bytes for length (1-4, default 2)
+   */
+  static buildReadMemoryByAddress(
+    address: number,
+    length: number,
+    addressSize: number = 4,
+    lengthSize: number = 2
+  ): Uint8Array {
+    const addressAndLengthFormatId =
+      ((lengthSize & 0x0f) << 4) | (addressSize & 0x0f);
+    const request = new Uint8Array(1 + 1 + addressSize + lengthSize);
+    request[0] = UDS_SID.READ_MEMORY_BY_ADDRESS;
+    request[1] = addressAndLengthFormatId;
+
+    // Write address (big-endian)
+    for (let i = 0; i < addressSize; i++) {
+      request[2 + i] = (address >> (8 * (addressSize - 1 - i))) & 0xff;
+    }
+    // Write length (big-endian)
+    for (let i = 0; i < lengthSize; i++) {
+      request[2 + addressSize + i] =
+        (length >> (8 * (lengthSize - 1 - i))) & 0xff;
+    }
+    return request;
+  }
+
+  /**
+   * Build Write Memory By Address (0x3D) request
+   * @param address - Memory address to write
+   * @param data - Data to write
+   * @param addressSize - Bytes for address (1-4, default 4)
+   */
+  static buildWriteMemoryByAddress(
+    address: number,
+    data: Uint8Array,
+    addressSize: number = 4
+  ): Uint8Array {
+    const lengthSize = 2;
+    const addressAndLengthFormatId =
+      ((lengthSize & 0x0f) << 4) | (addressSize & 0x0f);
+    const request = new Uint8Array(
+      1 + 1 + addressSize + lengthSize + data.length
+    );
+    request[0] = UDS_SID.WRITE_MEMORY_BY_ADDRESS;
+    request[1] = addressAndLengthFormatId;
+
+    // Write address (big-endian)
+    for (let i = 0; i < addressSize; i++) {
+      request[2 + i] = (address >> (8 * (addressSize - 1 - i))) & 0xff;
+    }
+    // Write length (big-endian)
+    for (let i = 0; i < lengthSize; i++) {
+      request[2 + addressSize + i] =
+        (data.length >> (8 * (lengthSize - 1 - i))) & 0xff;
+    }
+    request.set(data, 2 + addressSize + lengthSize);
+    return request;
+  }
+
+  /**
+   * Build Request Download (0x34) request
+   * @param address - Memory address for download
+   * @param uncompressedSize - Size of data to download
+   * @param dataFormatId - Compression/encryption format (0x00 = none)
+   * @param addressSize - Bytes for address (1-4, default 4)
+   * @param lengthSize - Bytes for length (1-4, default 4)
+   */
+  static buildRequestDownload(
+    address: number,
+    uncompressedSize: number,
+    dataFormatId: number = 0x00,
+    addressSize: number = 4,
+    lengthSize: number = 4
+  ): Uint8Array {
+    const addressAndLengthFormatId =
+      ((lengthSize & 0x0f) << 4) | (addressSize & 0x0f);
+    const request = new Uint8Array(1 + 1 + 1 + addressSize + lengthSize);
+    request[0] = UDS_SID.REQUEST_DOWNLOAD;
+    request[1] = dataFormatId;
+    request[2] = addressAndLengthFormatId;
+
+    // Write address (big-endian)
+    for (let i = 0; i < addressSize; i++) {
+      request[3 + i] = (address >> (8 * (addressSize - 1 - i))) & 0xff;
+    }
+    // Write size (big-endian)
+    for (let i = 0; i < lengthSize; i++) {
+      request[3 + addressSize + i] =
+        (uncompressedSize >> (8 * (lengthSize - 1 - i))) & 0xff;
+    }
+    return request;
+  }
+
+  /**
+   * Build Transfer Data (0x36) request
+   * @param blockSequenceCounter - Block counter (1-255, wraps)
+   * @param data - Data block to transfer
+   */
+  static buildTransferData(
+    blockSequenceCounter: number,
+    data: Uint8Array
+  ): Uint8Array {
+    const request = new Uint8Array(2 + data.length);
+    request[0] = UDS_SID.TRANSFER_DATA;
+    request[1] = blockSequenceCounter & 0xff;
+    request.set(data, 2);
+    return request;
+  }
+
+  /**
+   * Build Request Transfer Exit (0x37) request
+   */
+  static buildRequestTransferExit(): Uint8Array {
+    return new Uint8Array([UDS_SID.REQUEST_TRANSFER_EXIT]);
   }
 
   /**

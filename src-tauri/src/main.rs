@@ -105,6 +105,15 @@ struct IsoTpConfigParams {
     params: Option<Vec<ConfigParam>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct FlowControlParams {
+    tx_id: u32,
+    rx_id: u32,
+    block_size: Option<u8>,
+    st_min: Option<u8>,
+    pad_value: Option<u8>,
+}
+
 #[derive(Debug, Serialize)]
 struct IsoTpConfigRead {
     block_size: u32,
@@ -488,6 +497,29 @@ async fn get_isotp_config(state: State<'_, AppState>) -> Result<IsoTpConfigRead,
 }
 
 #[tauri::command]
+async fn set_flow_control_filter(
+    state: State<'_, AppState>,
+    params: FlowControlParams
+) -> Result<(), String> {
+    let mut driver_guard = state.driver.lock().unwrap();
+
+    if let Some(driver) = driver_guard.as_mut() {
+        driver
+            .set_flow_control_filter(
+                params.tx_id,
+                params.rx_id,
+                params.block_size.unwrap_or(0),
+                params.st_min.unwrap_or(0),
+                params.pad_value,
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        Err("Device not connected".to_string())
+    }
+}
+
+#[tauri::command]
 async fn start_heartbeat(
     state: State<'_, AppState>,
     params: HeartbeatParams
@@ -628,6 +660,113 @@ async fn brute_force_gmlan_key(
     Ok(algos.iter().map(|a| format!("{a:02X}")).collect())
 }
 
+// GMLAN: Calculate key for a given seed and algorithm (Rust is source of truth)
+#[tauri::command]
+async fn calculate_gmlan_key(
+    seed: u16,
+    algo: u8
+) -> Result<u16, String> {
+    const TABLE: &[u8] = include_bytes!("../resources/gmlan.bin");
+    gmlan::calculate_key(seed, algo, TABLE)
+}
+
+// GMLAN: Reverse engineer algorithm from known seed/key pair
+#[derive(Debug, Serialize)]
+struct ReverseEngineerResult {
+    algo: Option<u8>,
+    sequence: Option<Vec<GmlanOperation>>,
+}
+
+#[derive(Debug, Serialize)]
+struct GmlanOperation {
+    opcode: u8,
+    hh: u8,
+    ll: u8,
+}
+
+#[tauri::command]
+async fn reverse_engineer_gmlan(
+    seed: u16,
+    target_key: u16,
+    max_algorithms: Option<u16>
+) -> Result<ReverseEngineerResult, String> {
+    const TABLE: &[u8] = include_bytes!("../resources/gmlan.bin");
+    let max_algo = max_algorithms.unwrap_or(256) as u8;
+    
+    // Detect table format
+    let (stride, op_count) = if TABLE.len() >= 4096 && TABLE.len() % 16 == 0 {
+        (16usize, 5usize)
+    } else {
+        (13usize, 4usize)
+    };
+    
+    for algo in 1..max_algo {
+        let idx = (algo as usize) * stride;
+        if idx + (op_count * 3) > TABLE.len() {
+            break;
+        }
+        
+        if let Ok(key) = gmlan::calculate_key(seed, algo, TABLE) {
+            if key == target_key {
+                // Build operation sequence
+                let mut sequence = Vec::new();
+                for i in 0..op_count {
+                    let op_idx = idx + i * 3;
+                    let opcode = TABLE[op_idx];
+                    if opcode == 0x00 {
+                        break;
+                    }
+                    sequence.push(GmlanOperation {
+                        opcode,
+                        hh: TABLE[op_idx + 1],
+                        ll: TABLE[op_idx + 2],
+                    });
+                }
+                return Ok(ReverseEngineerResult {
+                    algo: Some(algo),
+                    sequence: Some(sequence),
+                });
+            }
+        }
+    }
+    
+    Ok(ReverseEngineerResult {
+        algo: None,
+        sequence: None,
+    })
+}
+
+// GMLAN: Get all possible keys for a seed (brute force all algorithms)
+#[derive(Debug, Serialize)]
+struct GmlanKeyResult {
+    algo: u8,
+    key: u16,
+}
+
+#[tauri::command]
+async fn brute_force_all_gmlan(
+    seed: u16
+) -> Result<Vec<GmlanKeyResult>, String> {
+    const TABLE: &[u8] = include_bytes!("../resources/gmlan.bin");
+    
+    let (stride, _) = if TABLE.len() >= 4096 && TABLE.len() % 16 == 0 {
+        (16usize, 5usize)
+    } else {
+        (13usize, 4usize)
+    };
+    
+    let max_algo = (TABLE.len() / stride) as u8;
+    let mut results = Vec::new();
+    
+    for algo in 0..max_algo {
+        if let Ok(key) = gmlan::calculate_key(seed, algo, TABLE) {
+            results.push(GmlanKeyResult { algo, key });
+        }
+    }
+    
+    Ok(results)
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState {
@@ -648,11 +787,16 @@ fn main() {
             set_rx_filters,
             set_isotp_config,
             get_isotp_config,
+            set_flow_control_filter,
             start_heartbeat,
             stop_heartbeat,
             scan_modules,
-            brute_force_gmlan_key
+            brute_force_gmlan_key,
+            calculate_gmlan_key,
+            reverse_engineer_gmlan,
+            brute_force_all_gmlan
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

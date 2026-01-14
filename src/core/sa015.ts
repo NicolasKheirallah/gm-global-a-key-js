@@ -22,6 +22,7 @@ export class SA015Error extends Error {
       | "ALGO_NOT_FOUND"
       | "INVALID_PREFIX"
       | "INVALID_PAYLOAD"
+      | "BLOB_DIGEST_MISMATCH"
       | "ALGO_MISMATCH"
       | "INVALID_SEED"
       | "SEED_FORBIDDEN"
@@ -129,9 +130,9 @@ export class SA015Engine {
     options: SA015Options = {}
   ): Promise<SA015Result> {
     // Validate algorithm
-    if (!Number.isInteger(algo) || algo < 0 || algo > 255) {
+    if (!Number.isInteger(algo) || algo < 0 || algo > 0xffff) {
       throw new SA015Error(
-        `Invalid algorithm ID: must be integer 0-255, got ${algo}`,
+        `Invalid algorithm ID: must be integer 0-65535, got ${algo}`,
         "ALGO_NOT_FOUND",
         { algo }
       );
@@ -208,6 +209,13 @@ export class SA015Engine {
 
     // Decode payload
     const payload = blob.substring(2);
+    if (payload.length !== 60) {
+      throw new SA015Error(
+        `Invalid payload length for algorithm ${algo}: expected 60 chars, got ${payload.length}`,
+        "INVALID_PAYLOAD",
+        { algo, expectedLength: 60, actualLength: payload.length }
+      );
+    }
     const rawPayload = safeBase64Decode(payload, algo);
 
     // Validate payload length
@@ -217,6 +225,26 @@ export class SA015Engine {
         "INVALID_PAYLOAD",
         { algo, expectedLength: 44, actualLength: rawPayload.length }
       );
+    }
+
+    // Validate blob digest (first 36 bytes hashed, compare to trailing 8 bytes)
+    const expectedDigest = rawPayload.slice(36, 44);
+    const actualDigest = (await CryptoShim.sha256(rawPayload.slice(0, 36))).slice(
+      0,
+      8
+    );
+    for (let i = 0; i < 8; i++) {
+      if (expectedDigest[i] !== actualDigest[i]) {
+        throw new SA015Error(
+          `Blob digest mismatch for algorithm ${algo}`,
+          "BLOB_DIGEST_MISMATCH",
+          {
+            algo,
+            expected: Array.from(expectedDigest),
+            actual: Array.from(actualDigest),
+          }
+        );
+      }
     }
 
     // Extract components

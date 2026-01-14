@@ -39,6 +39,11 @@ describe("UDS Module", () => {
       const request = UDSMessage.buildSeedRequest(SECURITY_LEVEL.LEVEL_01);
       expect(request).toEqual(new Uint8Array([0x27, 0x01]));
     });
+
+    it("should normalize even level to odd for seed request", () => {
+      const request = UDSMessage.buildSeedRequest(0x02);
+      expect(request).toEqual(new Uint8Array([0x27, 0x01]));
+    });
   });
 
   describe("UDSMessage.buildKeyRequest", () => {
@@ -46,6 +51,19 @@ describe("UDS Module", () => {
       const key = new Uint8Array([0xa1, 0xb2]);
       const request = UDSMessage.buildKeyRequest(SECURITY_LEVEL.LEVEL_01, key);
       expect(request).toEqual(new Uint8Array([0x27, 0x02, 0xa1, 0xb2]));
+    });
+
+    it("should normalize odd level to even for key request", () => {
+      const key = new Uint8Array([0xa1, 0xb2]);
+      const request = UDSMessage.buildKeyRequest(0x03, key);
+      expect(request).toEqual(new Uint8Array([0x27, 0x04, 0xa1, 0xb2]));
+    });
+  });
+
+  describe("UDSMessage.normalizeSeedLevel", () => {
+    it("should reject out-of-range levels", () => {
+      expect(() => UDSMessage.normalizeSeedLevel(0x00)).toThrow();
+      expect(() => UDSMessage.normalizeSeedLevel(0x7f)).toThrow();
     });
   });
 

@@ -12,6 +12,34 @@ A production-grade, high-performance diagnostic toolkit for **General Motors Glo
 
 The application implements a **Hexagonal Architecture** (also known as Ports and Adapters) to decouple the UI from the protocol logic and hardware transport layers.
 
+```mermaid
+graph TB
+    subgraph Frontend["React Frontend"]
+        UI[Views: SA015, GMLAN, UDS, Hardware]
+        Services[J2534Service / SerialService]
+        Core[Crypto Engines: SA015, GMLAN]
+    end
+
+    subgraph Backend["Tauri Rust Backend"]
+        IPC[IPC Handlers - main.rs]
+        J2534[J2534Driver - FFI Layer]
+        GMLAN_RS[GMLAN Rust Engine]
+    end
+
+    subgraph External["External"]
+        DLL[J2534 DLL - op20pt32.dll]
+        ECU[Vehicle ECU]
+    end
+
+    UI --> Services
+    Services --> Core
+    Services -->|Tauri IPC| IPC
+    IPC --> J2534
+    IPC --> GMLAN_RS
+    J2534 -->|unsafe FFI| DLL
+    DLL -->|CAN/ISO-TP| ECU
+```
+
 ### 1. The Core Domain (`src/core`)
 
 Pure TypeScript implementations of cryptographic algorithms, independent of any UI or hardware.

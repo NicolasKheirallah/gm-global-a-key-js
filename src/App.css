@@ -1,44 +1,40 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
 :root {
-    /* Cyberpunk / Automotive Palette */
-    --bg-base: #0f172a; /* Deep Slate - Main Background */
-    --bg-surface: #1e293b; /* Surface Slate */
-    --bg-surface-glass: rgba(30, 41, 59, 0.7); /* Glassy Surface */
+    /* Scandinavian-inspired palette */
+    --bg-base: #f6f6f2;
+    --bg-surface: #ffffff;
+    --bg-surface-glass: rgba(255, 255, 255, 0.82);
 
-    /* Accents */
-    --accent-primary: #38bdf8; /* Neon Sky Blue */
-    --accent-glow: rgba(56, 189, 248, 0.5);
-    --accent-dim: rgba(56, 189, 248, 0.1);
+    --accent-primary: #2f6f6b;
+    --accent-glow: rgba(47, 111, 107, 0.25);
+    --accent-dim: rgba(47, 111, 107, 0.12);
 
-    /* Text */
-    --text-primary: #f1f5f9; /* Slate 100 */
-    --text-secondary: #94a3b8; /* Slate 400 */
-    --text-muted: #64748b; /* Slate 500 */
+    --text-primary: #1d2321;
+    --text-secondary: #5a6360;
+    --text-muted: #8a928f;
 
-    /* Borders */
-    --border-glass: rgba(255, 255, 255, 0.1);
-    --border-accent: rgba(56, 189, 248, 0.3);
+    --border-glass: rgba(18, 24, 22, 0.08);
+    --border-accent: rgba(47, 111, 107, 0.25);
 
-    /* Status */
-    --status-success: #10b981; /* Emerald */
-    --status-error: #ef4444; /* Red */
-    --status-warning: #f59e0b; /* Amber */
+    --status-success: #2f8f73;
+    --status-error: #c94f4f;
+    --status-warning: #b07a2a;
 
-    /* Dimensions */
-    --sidebar-width: 260px;
-    --radius-sm: 6px;
+    --sidebar-width: 280px;
+    --radius-sm: 8px;
     --radius-md: 12px;
-    --radius-lg: 16px;
+    --radius-lg: 18px;
 
-    /* Effects */
-    --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
-    --backdrop-blur: blur(12px);
+    --shadow-glass: 0 18px 40px rgba(16, 24, 22, 0.08);
+    --backdrop-blur: blur(10px);
+
+    --font-sans: "Sora", sans-serif;
+    --font-mono: "IBM Plex Mono", monospace;
 }
 
 body {
-    font-family: 'Outfit', 'Inter', sans-serif;
+    font-family: var(--font-sans);
     background-color: var(--bg-base);
     color: var(--text-primary);
     margin: 0;
@@ -46,8 +42,48 @@ body {
     height: 100vh;
     overflow: hidden;
     -webkit-font-smoothing: antialiased;
-    /* Rich dark gradient background */
-    background: radial-gradient(circle at 15% 50%, #1e1b4b 0%, #0f172a 50%, #020617 100%);
+    background-image:
+        radial-gradient(circle at 20% 15%, rgba(176, 205, 200, 0.35), transparent 55%),
+        radial-gradient(circle at 85% 10%, rgba(207, 216, 232, 0.35), transparent 50%),
+        linear-gradient(180deg, #f8f8f4 0%, #f3f3ef 100%);
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Dark Mode Theme */
+body.dark-mode {
+    --bg-base: #0f1413;
+    --bg-surface: #1a2120;
+    --bg-surface-glass: rgba(26, 33, 32, 0.92);
+
+    --accent-primary: #4ecdc4;
+    --accent-glow: rgba(78, 205, 196, 0.25);
+    --accent-dim: rgba(78, 205, 196, 0.15);
+
+    --text-primary: #e8edec;
+    --text-secondary: #a8b4b1;
+    --text-muted: #6b7a77;
+
+    --border-glass: rgba(255, 255, 255, 0.08);
+    --border-accent: rgba(78, 205, 196, 0.3);
+
+    --status-success: #45d9a8;
+    --status-error: #f87171;
+    --status-warning: #fbbf24;
+
+    --shadow-glass: 0 18px 40px rgba(0, 0, 0, 0.35);
+
+    background-image:
+        radial-gradient(circle at 20% 15%, rgba(78, 205, 196, 0.08), transparent 55%),
+        radial-gradient(circle at 85% 10%, rgba(56, 189, 248, 0.06), transparent 50%),
+        linear-gradient(180deg, #0f1413 0%, #141a19 100%);
+}
+
+/* Dark mode scrollbar */
+body.dark-mode ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+}
+body.dark-mode ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.25);
 }
 
 /* Scrollbar Styling */
@@ -59,11 +95,11 @@ body {
     background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 4px;
+    background: rgba(28, 35, 33, 0.12);
+    border-radius: 6px;
 }
 ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.2);
+    background: rgba(28, 35, 33, 0.2);
 }
 
 /* Utilities */

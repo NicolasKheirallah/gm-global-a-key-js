@@ -11,6 +11,7 @@ import {
 } from "../core";
 
 type TableType = "gmlan" | "others" | "class2";
+type AlgoFormat = "hex" | "dec";
 
 interface GMLANViewProps {
   sharedSeed: string;
@@ -24,12 +25,21 @@ const formatHex = (val: string, maxBytes: number): string => {
   return clean.slice(0, maxBytes * 2);
 };
 
+const formatDec = (val: string, maxDigits: number): string => {
+  const clean = val.replace(/\D/g, "");
+  return clean.slice(0, maxDigits);
+};
+
 /**
  * GMLAN (Legacy 16-bit) key calculator view
  */
 export function GMLANView({ sharedSeed }: GMLANViewProps) {
   const [seed, setSeed] = useSessionStorage("gmlan_seed", sharedSeed);
   const [algo, setAlgo] = useSessionStorage("gmlan_algo", "");
+  const [algoFormat, setAlgoFormat] = useSessionStorage<AlgoFormat>(
+    "gmlan_algo_format",
+    "hex"
+  );
   const [table, setTable] = useSessionStorage<TableType>(
     "gmlan_table",
     "gmlan"
@@ -49,6 +59,10 @@ export function GMLANView({ sharedSeed }: GMLANViewProps) {
   };
 
   const handleAlgoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (algoFormat === "dec") {
+      setAlgo(formatDec(e.target.value, 3));
+      return;
+    }
     setAlgo(formatHex(e.target.value, 1));
   };
 
@@ -63,7 +77,36 @@ export function GMLANView({ sharedSeed }: GMLANViewProps) {
       if (isBrute) {
         setLoading(true);
 
-        // Use Web Worker for brute force to prevent UI freeze
+        // Try Rust backend first (much faster)
+        if (GMLANEngine.isTauriEnvironment()) {
+          try {
+            const results = await GMLANEngine.bruteForceAllAsync(seedInt);
+            setLoading(false);
+            if (!results || results.length === 0) {
+              setResult("No keys found.");
+            } else {
+              setResult(
+                results
+                  .map(
+                    (r: { algo: number; key: number }) =>
+                      `Algo 0x${r.algo
+                        .toString(16)
+                        .toUpperCase()
+                        .padStart(2, "0")}: Key 0x${r.key
+                        .toString(16)
+                        .toUpperCase()
+                        .padStart(4, "0")}`
+                  )
+                  .join("\n")
+              );
+            }
+            return;
+          } catch (e) {
+            console.warn("Rust brute force failed, falling back to worker:", e);
+          }
+        }
+
+        // Fallback: Use Web Worker for brute force to prevent UI freeze
         const worker = new Worker(new URL("../worker.ts", import.meta.url), {
           type: "module",
         });
@@ -105,14 +148,23 @@ export function GMLANView({ sharedSeed }: GMLANViewProps) {
           worker.terminate();
         };
       } else {
-        const algoId = parseInt(algo, 16);
+        const algoId =
+          algoFormat === "dec" ? parseInt(algo, 10) : parseInt(algo, 16);
         if (isNaN(algoId)) throw new Error("Invalid Algorithm ID");
+        if (algoId < 0 || algoId > 0xff) {
+          throw new Error("Algorithm ID must be 0-255");
+        }
 
-        let tableData = table_gmlan;
-        if (table === "others") tableData = table_others;
-        if (table === "class2") tableData = table_class2;
+        // Use async Rust method (source of truth), fallback to TypeScript
+        let tableData: Uint8Array | undefined = undefined;
+        if (!GMLANEngine.isTauriEnvironment()) {
+          // Only need table for browser fallback
+          tableData = table_gmlan;
+          if (table === "others") tableData = table_others;
+          if (table === "class2") tableData = table_class2;
+        }
 
-        const key = GMLANEngine.getKey(seedInt, algoId, tableData);
+        const key = await GMLANEngine.getKeyAsync(seedInt, algoId, tableData);
         setResult(`Key: 0x${key.toString(16).toUpperCase().padStart(4, "0")}`);
       }
     } catch (e) {
@@ -149,16 +201,27 @@ export function GMLANView({ sharedSeed }: GMLANViewProps) {
 
       {!isBrute && (
         <div className={styles.formGroup}>
-          <label htmlFor="gmlan-algo">Algorithm ID (hex):</label>
-          <input
-            id="gmlan-algo"
-            value={algo}
-            onChange={handleAlgoChange}
-            placeholder="12"
-            maxLength={2}
-            autoComplete="off"
-            spellCheck={false}
-          />
+          <label htmlFor="gmlan-algo">Algorithm ID:</label>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <input
+              id="gmlan-algo"
+              value={algo}
+              onChange={handleAlgoChange}
+              placeholder={algoFormat === "dec" ? "238" : "12"}
+              maxLength={algoFormat === "dec" ? 3 : 2}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <select
+              value={algoFormat}
+              onChange={(e) =>
+                setAlgoFormat(e.target.value as AlgoFormat)
+              }
+            >
+              <option value="hex">Hex</option>
+              <option value="dec">Dec</option>
+            </select>
+          </div>
         </div>
       )}
 

@@ -1,4 +1,4 @@
-import { UDSMessage } from "../core/uds";
+import { UDSMessage, UDSNegativeResponseError, UDS_SID } from "../core/uds";
 
 // Type alias for the Web Serial API SerialPort
 type WebSerialPort = Awaited<ReturnType<typeof navigator.serial.requestPort>>;
@@ -92,6 +92,10 @@ export class SerialService implements HardwareService {
   private reconnectAttempts = 0;
   private currentTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private lastSeed: Uint8Array | null = null;
+  private lastSeedTime = 0;
+  private lastSecurityLevel = 0x01;
+  private static readonly SEED_TIMEOUT_MS = 10000;
 
   constructor(config: SerialConfig = {}) {
     this.config = {
@@ -385,6 +389,82 @@ export class SerialService implements HardwareService {
   }
 
   /**
+   * Extract UDS frames from ELM327 response text
+   */
+  private extractUdsFrames(raw: string): Uint8Array[] {
+    const frames: Uint8Array[] = [];
+    const lines = raw
+      .split(/[\r\n]+/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    for (const line of lines) {
+      if (/^(SEARCHING|OK|ELM|ATI|ATZ|BUS INIT)/i.test(line)) continue;
+      const hex = line.replace(/[^0-9A-Fa-f]/g, "");
+      if (hex.length < 2 || hex.length % 2 !== 0) continue;
+      try {
+        frames.push(UDSMessage.parseHex(hex));
+      } catch {
+        continue;
+      }
+    }
+
+    return frames;
+  }
+
+  /**
+   * Pick the best UDS response frame (skip NRC 0x78)
+   */
+  private selectUdsFrame(
+    frames: Uint8Array[],
+    expectedSid?: number
+  ): Uint8Array {
+    let pending = false;
+
+    for (const frame of frames) {
+      if (UDSMessage.isResponsePending(frame, expectedSid)) {
+        pending = true;
+        continue;
+      }
+
+      if (frame[0] === 0x7f) {
+        if (frame.length >= 3) {
+          throw new UDSNegativeResponseError(frame[1], frame[2], frame);
+        }
+        throw new Error("Malformed negative response");
+      }
+
+      if (expectedSid === undefined || frame[0] === expectedSid + 0x40) {
+        return frame;
+      }
+    }
+
+    if (pending) {
+      throw new Error("Response pending (0x78) - no final response received");
+    }
+
+    throw new Error("No valid UDS response received");
+  }
+
+  /**
+   * Send a UDS request and return parsed response frame
+   */
+  private async sendUdsRequest(
+    request: Uint8Array,
+    expectedSid?: number
+  ): Promise<Uint8Array> {
+    const hexReq = UDSMessage.formatBytes(request).replace(/\s/g, "");
+    const response = await this.sendAndParse(hexReq);
+
+    if (!response.success || !response.data) {
+      throw new Error(`UDS request failed: ${response.error}`);
+    }
+
+    const frames = this.extractUdsFrames(response.data);
+    return this.selectUdsFrame(frames, expectedSid);
+  }
+
+  /**
    * Process buffer when complete response received
    */
   private processBuffer(): void {
@@ -495,8 +575,9 @@ export class SerialService implements HardwareService {
    * @returns Seed response and log
    */
   async executeSeedRequest(
-    header = "7E0"
-  ): Promise<{ seed: string; log: string }> {
+    header = "7E0",
+    level: number = 0x01
+  ): Promise<{ seed: string; log: string; seedBytes?: Uint8Array }> {
     const logEntries: string[] = [];
 
     const sendLog = async (cmd: string): Promise<string> => {
@@ -520,9 +601,25 @@ export class SerialService implements HardwareService {
     await sendLog("10 03"); // Extended diagnostic session
 
     // Request seed
-    const seedResp = await sendLog("27 01");
+    const normalizedLevel = UDSMessage.normalizeSeedLevel(level);
+    const seedReq = UDSMessage.buildSeedRequest(normalizedLevel);
+    const seedReqHex = UDSMessage.formatBytes(seedReq);
+    const seedFrame = await this.sendUdsRequest(
+      seedReq,
+      UDS_SID.SECURITY_ACCESS
+    );
+    const seedResp = UDSMessage.formatBytes(seedFrame);
+    logEntries.push(`TX: ${seedReqHex} -> RX: ${seedResp}`);
 
-    return { seed: seedResp, log: logEntries.join("\n") };
+    const seedBytes = UDSMessage.parseSecuritySeedResponse(
+      seedFrame,
+      normalizedLevel
+    );
+    this.lastSecurityLevel = normalizedLevel;
+    this.lastSeedTime = Date.now();
+    this.lastSeed = seedBytes;
+
+    return { seed: seedResp, log: logEntries.join("\n"), seedBytes };
   }
 
   /**
@@ -530,17 +627,22 @@ export class SerialService implements HardwareService {
    * @param key - 2-byte key as hex string (e.g., "A21A")
    * @returns Response
    */
-  async sendKey(key: string): Promise<string> {
+  async sendKey(key: string, level: number = 0x01): Promise<string> {
+    const seedLevel = this.validateKeyRequest(level);
     if (key.length !== 4) {
       throw new Error("Key must be 4 hex characters (2 bytes)");
     }
 
-    const k1 = key.substring(0, 2);
-    const k2 = key.substring(2, 4);
-    const command = `27 02 ${k1} ${k2}`;
-
-    const response = await this.send(command);
-    return `TX: ${command} -> RX: ${response}`;
+    const keyBytes = UDSMessage.parseHex(key);
+    const req = UDSMessage.buildKeyRequest(seedLevel, keyBytes);
+    const reqHex = UDSMessage.formatBytes(req);
+    const resp = await this.sendUdsRequest(req, UDS_SID.SECURITY_ACCESS);
+    if (!UDSMessage.parseSecurityKeyResponse(resp, seedLevel)) {
+      throw new Error("Key rejected or unexpected response");
+    }
+    const respHex = UDSMessage.formatBytes(resp);
+    this.lastSeed = null;
+    return `TX: ${reqHex} -> RX: ${respHex}`;
   }
 
   /**
@@ -548,19 +650,22 @@ export class SerialService implements HardwareService {
    * @param key - 5-byte key as hex string (e.g., "0F8323EB68")
    * @returns Response
    */
-  async sendKey5Byte(key: string): Promise<string> {
+  async sendKey5Byte(key: string, level: number = 0x01): Promise<string> {
+    const seedLevel = this.validateKeyRequest(level);
     if (key.length !== 10) {
       throw new Error("SA015 key must be 10 hex characters (5 bytes)");
     }
 
-    const bytes = [];
-    for (let i = 0; i < 10; i += 2) {
-      bytes.push(key.substring(i, i + 2));
+    const keyBytes = UDSMessage.parseHex(key);
+    const req = UDSMessage.buildKeyRequest(seedLevel, keyBytes);
+    const reqHex = UDSMessage.formatBytes(req);
+    const resp = await this.sendUdsRequest(req, UDS_SID.SECURITY_ACCESS);
+    if (!UDSMessage.parseSecurityKeyResponse(resp, seedLevel)) {
+      throw new Error("Key rejected or unexpected response");
     }
-
-    const command = `27 02 ${bytes.join(" ")}`;
-    const response = await this.send(command);
-    return `TX: ${command} -> RX: ${response}`;
+    const respHex = UDSMessage.formatBytes(resp);
+    this.lastSeed = null;
+    return `TX: ${reqHex} -> RX: ${respHex}`;
   }
 
   /**
@@ -594,8 +699,12 @@ export class SerialService implements HardwareService {
   /**
    * Start Tester Present heartbeat to keep session alive
    * @param intervalMs - Heartbeat interval (default: 2000ms)
+   * @param _suppressPositiveResponse - Unused, for interface compatibility
    */
-  startHeartbeat(intervalMs: number = 2000): void {
+  async startHeartbeat(
+    intervalMs: number = 2000,
+    _suppressPositiveResponse?: boolean
+  ): Promise<void> {
     this.stopHeartbeat();
 
     this.heartbeatInterval = setInterval(async () => {
@@ -620,7 +729,7 @@ export class SerialService implements HardwareService {
   /**
    * Stop Tester Present heartbeat
    */
-  stopHeartbeat(): void {
+  async stopHeartbeat(): Promise<void> {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = null;
@@ -642,19 +751,37 @@ export class SerialService implements HardwareService {
    */
   async requestSeed(
     level: number
-  ): Promise<{ seed: Uint8Array; response: ELMResponse }> {
-    const request = UDSMessage.buildSeedRequest(level);
-    const hexReq = UDSMessage.formatBytes(request).replace(/\s/g, "");
-    const response = await this.sendAndParse(hexReq);
+  ): Promise<{ seed: Uint8Array; response: string }> {
+    const normalizedLevel = UDSMessage.normalizeSeedLevel(level);
+    const request = UDSMessage.buildSeedRequest(normalizedLevel);
+    const resp = await this.sendUdsRequest(request, UDS_SID.SECURITY_ACCESS);
+    const seed = UDSMessage.parseSecuritySeedResponse(resp, normalizedLevel);
+    this.lastSecurityLevel = normalizedLevel;
+    this.lastSeedTime = Date.now();
+    this.lastSeed = seed;
+    return { seed, response: UDSMessage.formatBytes(resp) };
+  }
 
-    if (!response.success || !response.data) {
-      throw new Error(`Seed request failed: ${response.error}`);
+  private validateKeyRequest(level?: number): number {
+    if (!this.lastSeed) {
+      throw new Error(
+        "No seed request pending - call executeSeedRequest first"
+      );
     }
-
-    const respBytes = UDSMessage.parseHex(response.data);
-    const seed = UDSMessage.parseSecuritySeedResponse(respBytes, level);
-
-    return { seed, response };
+    if (Date.now() - this.lastSeedTime > SerialService.SEED_TIMEOUT_MS) {
+      this.lastSeed = null;
+      throw new Error("Seed request expired - request a new seed");
+    }
+    const seedLevel =
+      level !== undefined
+        ? UDSMessage.normalizeSeedLevel(level)
+        : this.lastSecurityLevel;
+    if (seedLevel !== this.lastSecurityLevel) {
+      throw new Error(
+        "Security level mismatch - request seed for this level first"
+      );
+    }
+    return seedLevel;
   }
 
   /**

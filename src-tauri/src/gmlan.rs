@@ -96,35 +96,35 @@ pub fn calculate_key(seed: u16, algo: u8, table: &[u8]) -> Result<u16, String> {
         return Ok(!seed);
     }
     
-    // Each algo is 13 bytes in table (starts at algo * 13)
-    // Table layout per algo: [unused_0, 4 groups of 3 bytes]
-    // Actually standard GMLAN table is typically:
-    // [AlgoID][Op1][H1][L1][Op2][H2][L2][Op3][H3][L3][Op4][H4][L4]
-    // But implementation usually skips AlgoID check if indexing directly.
-    // Let's assume passed table is the RAW BINARY FILE.
+    // GMLAN tables can have two formats:
+    // - Legacy 13-byte stride: 4 operations × 3 bytes + 1 byte (typically algo ID or padding)
+    // - Extended 16-byte stride: 5 operations × 3 bytes + 1 byte
+    // Detect format based on table size and known algorithm count
     
-    let idx = (algo as usize) * 13;
-    if idx + 12 >= table.len() {
+    // Heuristic: if table is divisible by 16 and large enough, use 16-byte stride
+    let (stride, op_count) = if table.len() >= 4096 && table.len() % 16 == 0 {
+        (16usize, 5usize)
+    } else {
+        (13usize, 4usize)
+    };
+    
+    let idx = (algo as usize) * stride;
+    if idx + (op_count * 3) > table.len() {
         return Err("Algorithm definition out of bounds".to_string());
     }
-    
-    // Start after the AlgoID byte (offset 1 ? check logic)
-    // The previous TS implementation used `algo * 13`.
-    // let code = table[idx]; -> this implies byte 0 is opcode 1? 
-    // Wait, let's check TS:
-    // `const code = table[idx];`
-    // `idx += 3;`
-    // So the table does NOT include the algo ID byte in the stride, or it is treated as Opcode 1?
-    // Usually Algo definition is 5 operations or so.
-    // TS impl: loop 4 times.
     
     let mut seed_word = seed;
     let mut cursor = idx;
     
-    for _ in 0..4 {
+    for _ in 0..op_count {
         let opcode = table[cursor];
         let hh = table[cursor + 1];
         let ll = table[cursor + 2];
+        
+        // Stop early if opcode is 0x00 (NOP/end marker)
+        if opcode == 0x00 {
+            break;
+        }
         
         match opcode {
             OP_BYTE_SWAP => seed_word = op_05(seed_word),
@@ -138,7 +138,9 @@ pub fn calculate_key(seed: u16, algo: u8, table: &[u8]) -> Result<u16, String> {
             OP_SWAP_ADD => seed_word = op_7e(seed_word, hh, ll),
             OP_SUB_HL => seed_word = op_98(seed_word, hh, ll),
             OP_SUB_LH => seed_word = op_f8(seed_word, hh, ll),
-            _ => return Err(format!("Unknown opcode: {:02X}", opcode)),
+            _ => {
+                // Unknown opcode: treat as NOP for parity with gmseedcalc
+            }
         }
         
         cursor += 3;
@@ -149,11 +151,13 @@ pub fn calculate_key(seed: u16, algo: u8, table: &[u8]) -> Result<u16, String> {
 
 // Brute Force: Try all 256 algorithms
 // Needs the table data passed in or embedded.
-// We will embed a standard table for now or leave it empty/mock.
 // In production, we should load `gmlan.bin`.
 pub fn brute_force(seed: u16, known_key: u16, table: &[u8]) -> Vec<u8> {
     let mut found_algos = Vec::new();
-    let max_algo = (table.len() / 13) as u8;
+    
+    // Use same stride detection as calculate_key
+    let stride = if table.len() >= 4096 && table.len() % 16 == 0 { 16 } else { 13 };
+    let max_algo = (table.len() / stride) as u8;
     
     for algo in 0..max_algo {
         if let Ok(calc) = calculate_key(seed, algo, table) {

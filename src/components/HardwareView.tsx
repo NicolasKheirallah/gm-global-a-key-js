@@ -4,6 +4,18 @@ import styles from "./View.module.css";
 import { type ConnectionState } from "../services/SerialService";
 import type { HardwareService } from "../services/HardwareService";
 import { GM_MODULES } from "../data/modules";
+import {
+  SECURITY_LEVELS,
+  SecurityAccessManager,
+  UDSMessage,
+  GMLANEngine,
+  SA015Engine,
+  Utils,
+  table_gmlan,
+  table_others,
+  table_class2,
+} from "../core";
+import { getSecurityProfile } from "../data/securityProfiles";
 
 interface HardwareViewProps {
   onSeedFound: (seed: string) => void;
@@ -25,6 +37,8 @@ export function HardwareView({
   );
   const [ecuHeader, setEcuHeader] = useState("7E0");
   const [keyToUnlock, setKeyToUnlock] = useState("");
+  const [securityLevel, setSecurityLevel] = useState("01");
+  const [profileInfo, setProfileInfo] = useState("");
   const [isScanning, setIsScanning] = useState(false);
   const [j2534Devices, setJ2534Devices] = useState<
     Array<{ name: string; dll_path: string }>
@@ -46,6 +60,7 @@ export function HardwareView({
   const [structuredResult, setStructuredResult] = useState("");
 
   const isJ2534 = serialService && "listDevices" in serialService;
+  const securityManagerRef = useState(() => new SecurityAccessManager())[0];
 
   useEffect(() => {
     if (isJ2534 && serialService.listDevices) {
@@ -86,13 +101,29 @@ export function HardwareView({
         .setHeader?.(headerId)
         .catch((e) =>
           appendLog(
-            `Header update failed: ${e instanceof Error ? e.message : String(e)}`
+            `Header update failed: ${
+              e instanceof Error ? e.message : String(e)
+            }`
           )
         );
     } else {
       serialService.send(`ATSH ${ecuHeader}`).catch(() => {});
     }
   }, [ecuHeader, serialService, isJ2534, appendLog]);
+
+  useEffect(() => {
+    const profile = getSecurityProfile(ecuHeader);
+    if (profile) {
+      setProfileInfo(profile.name);
+      if (profile.defaultLevel !== undefined) {
+        setSecurityLevel(
+          profile.defaultLevel.toString(16).toUpperCase().padStart(2, "0")
+        );
+      }
+    } else {
+      setProfileInfo("");
+    }
+  }, [ecuHeader]);
 
   const handleConnect = async () => {
     try {
@@ -153,7 +184,9 @@ export function HardwareView({
         blockSize: String(config.block_size),
         stMin: String(config.st_min),
         wftMax: String(config.wft_max),
-        padValue: config.pad_value ? config.pad_value.toString(16).toUpperCase() : "",
+        padValue: config.pad_value
+          ? config.pad_value.toString(16).toUpperCase()
+          : "",
       });
       appendLog(
         `ISO-TP Config: BS=${config.block_size} STmin=${config.st_min} WFTmax=${config.wft_max} PAD=${config.pad_value}`
@@ -171,36 +204,66 @@ export function HardwareView({
       return;
     }
 
+    const levelNum = parseInt(securityLevel, 16);
+    if (Number.isNaN(levelNum)) {
+      appendLog("Error: Invalid security level (hex)");
+      return;
+    }
+
+    const normalizedLevel = UDSMessage.normalizeSeedLevel(levelNum);
+    const attempt = securityManagerRef.canAttempt(normalizedLevel);
+    if (!attempt.allowed) {
+      appendLog(
+        `Security lockout active - wait ${Math.ceil(
+          attempt.waitMs / 1000
+        )}s before retrying`
+      );
+      return;
+    }
+
     setIsScanning(true);
-    appendLog(`Sending Seed Request to ECU ${ecuHeader}...`);
+    appendLog(
+      `Sending Seed Request (0x${securityLevel}) to ECU ${ecuHeader}...`
+    );
 
     try {
-      const result = await serialService.executeSeedRequest(ecuHeader);
+      const result = await serialService.executeSeedRequest(
+        ecuHeader,
+        levelNum
+      );
       appendLog(result.log);
 
-      const seedMatch = /67\s*0?1\s*([0-9A-F]{2})\s*([0-9A-F]{2})/i.exec(
-        result.seed
-      );
-
-      if (seedMatch) {
-        const fullSeed = `${seedMatch[1]}${seedMatch[2]}`;
-        appendLog(`SUCCESS: Found GMLAN Seed ${fullSeed}`);
-        onSeedFound(fullSeed);
-      } else {
-        const seed5Match =
-          /67\s*0?1\s*([0-9A-F]{2})\s*([0-9A-F]{2})\s*([0-9A-F]{2})\s*([0-9A-F]{2})\s*([0-9A-F]{2})/i.exec(
-            result.seed
-          );
-
-        if (seed5Match) {
-          const fullSeed = `${seed5Match[1]}${seed5Match[2]}${seed5Match[3]}${seed5Match[4]}${seed5Match[5]}`;
-          appendLog(`SUCCESS: Found Global A Seed ${fullSeed}`);
-          onSeedFound(fullSeed);
+      if (result.seedBytes && result.seedBytes.length > 0) {
+        const seedHex = UDSMessage.formatBytes(result.seedBytes).replace(
+          /\s/g,
+          ""
+        );
+        if (result.seedBytes.length === 2) {
+          appendLog(`SUCCESS: Found GMLAN Seed ${seedHex}`);
+          onSeedFound(seedHex);
+        } else if (result.seedBytes.length === 5) {
+          appendLog(`SUCCESS: Found Global A Seed ${seedHex}`);
+          onSeedFound(seedHex);
         } else {
-          appendLog("FAILED: No recognized seed in response.");
+          appendLog(`Seed (${result.seedBytes.length} bytes): ${seedHex}`);
         }
+      } else {
+        appendLog("FAILED: No recognized seed in response.");
       }
     } catch (e) {
+      if (
+        e &&
+        typeof e === "object" &&
+        "name" in e &&
+        (e as Error).name === "UDSNegativeResponseError" &&
+        "nrc" in e
+      ) {
+        const nrc = (e as { nrc: number }).nrc;
+        securityManagerRef.recordFailure(
+          UDSMessage.normalizeSeedLevel(levelNum),
+          nrc
+        );
+      }
       appendLog(
         `Error reading seed: ${e instanceof Error ? e.message : String(e)}`
       );
@@ -241,9 +304,7 @@ export function HardwareView({
           found++;
         }
       } catch (e) {
-        appendLog(
-          `Scan failed: ${e instanceof Error ? e.message : String(e)}`
-        );
+        appendLog(`Scan failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     } else {
       for (const mod of GM_MODULES) {
@@ -306,7 +367,11 @@ export function HardwareView({
         const blockSize = Number(isoTpConfig.blockSize);
         const stMin = Number(isoTpConfig.stMin);
         const wftMax = Number(isoTpConfig.wftMax);
-        if (Number.isNaN(blockSize) || Number.isNaN(stMin) || Number.isNaN(wftMax)) {
+        if (
+          Number.isNaN(blockSize) ||
+          Number.isNaN(stMin) ||
+          Number.isNaN(wftMax)
+        ) {
           throw new Error("ISO-TP parameters must be numeric");
         }
 
@@ -324,7 +389,9 @@ export function HardwareView({
       appendLog("Advanced settings applied.");
     } catch (e) {
       appendLog(
-        `Failed to apply settings: ${e instanceof Error ? e.message : String(e)}`
+        `Failed to apply settings: ${
+          e instanceof Error ? e.message : String(e)
+        }`
       );
     }
   };
@@ -373,20 +440,160 @@ export function HardwareView({
   const handleUnlock = async () => {
     if (!serialService.isConnected) return;
     try {
+      const levelNum = parseInt(securityLevel, 16);
+      if (Number.isNaN(levelNum)) {
+        appendLog("Error: Invalid security level (hex)");
+        return;
+      }
+      const normalizedLevel = UDSMessage.normalizeSeedLevel(levelNum);
+      const attempt = securityManagerRef.canAttempt(normalizedLevel);
+      if (!attempt.allowed) {
+        appendLog(
+          `Security lockout active - wait ${Math.ceil(
+            attempt.waitMs / 1000
+          )}s before retrying`
+        );
+        return;
+      }
       appendLog(`Sending Key ${keyToUnlock}...`);
       const result =
         keyToUnlock.length === 10
-          ? await serialService.sendKey5Byte(keyToUnlock)
-          : await serialService.sendKey(keyToUnlock);
+          ? await serialService.sendKey5Byte(keyToUnlock, levelNum)
+          : await serialService.sendKey(keyToUnlock, levelNum);
 
       appendLog(result);
-      if (result.includes("67 02") || result.includes("6702")) {
-        appendLog("SUCCESS: ECU Unlocked!");
-      } else {
-        appendLog("FAILED: Unlock failed (NRC or Bad Key).");
-      }
+      appendLog("SUCCESS: ECU Unlocked!");
+      securityManagerRef.recordSuccess(normalizedLevel);
     } catch (e) {
+      if (
+        e &&
+        typeof e === "object" &&
+        "name" in e &&
+        (e as Error).name === "UDSNegativeResponseError" &&
+        "nrc" in e
+      ) {
+        const levelNum = parseInt(securityLevel, 16);
+        if (!Number.isNaN(levelNum)) {
+          securityManagerRef.recordFailure(
+            UDSMessage.normalizeSeedLevel(levelNum),
+            (e as { nrc: number }).nrc
+          );
+        }
+      }
       appendLog(`Error: ${e}`);
+    }
+  };
+
+  const handleAutoUnlock = async () => {
+    if (!serialService.isConnected) return;
+
+    const levelNum = parseInt(securityLevel, 16);
+    if (Number.isNaN(levelNum)) {
+      appendLog("Error: Invalid security level (hex)");
+      return;
+    }
+
+    const normalizedLevel = UDSMessage.normalizeSeedLevel(levelNum);
+    const attempt = securityManagerRef.canAttempt(normalizedLevel);
+    if (!attempt.allowed) {
+      appendLog(
+        `Security lockout active - wait ${Math.ceil(
+          attempt.waitMs / 1000
+        )}s before retrying`
+      );
+      return;
+    }
+
+    const profile = getSecurityProfile(ecuHeader);
+    if (!profile || !profile.levels || profile.levels.length === 0) {
+      appendLog("No security profile available for auto-unlock.");
+      return;
+    }
+
+    const levelProfile = profile.levels.find(
+      (l) => UDSMessage.normalizeSeedLevel(l.level) === normalizedLevel
+    );
+
+    if (!levelProfile || levelProfile.algorithm === "UNKNOWN") {
+      appendLog("Profile missing algorithm mapping for this level.");
+      return;
+    }
+
+    try {
+      appendLog("Auto-unlock: requesting seed...");
+      const result = await serialService.executeSeedRequest(
+        ecuHeader,
+        normalizedLevel
+      );
+      appendLog(result.log);
+
+      if (!result.seedBytes) {
+        appendLog("Failed to read seed bytes.");
+        return;
+      }
+
+      let keyHex = "";
+      if (levelProfile.algorithm === "GMLAN") {
+        if (result.seedBytes.length !== 2) {
+          appendLog("Expected 2-byte seed for GMLAN.");
+          return;
+        }
+        if (levelProfile.algoId === undefined) {
+          appendLog("Profile missing GMLAN algorithm ID.");
+          return;
+        }
+        const seedInt = Utils.bytesToInt(result.seedBytes);
+        let table = table_gmlan;
+        if (levelProfile.table === "others") table = table_others;
+        if (levelProfile.table === "class2") table = table_class2;
+        const keyInt = GMLANEngine.getKey(seedInt, levelProfile.algoId, table);
+        keyHex = keyInt.toString(16).toUpperCase().padStart(4, "0");
+      }
+
+      if (levelProfile.algorithm === "SA015") {
+        if (result.seedBytes.length !== 5) {
+          appendLog("Expected 5-byte seed for SA015.");
+          return;
+        }
+        if (levelProfile.algoId === undefined) {
+          appendLog("Profile missing SA015 algorithm ID.");
+          return;
+        }
+        const saRes = await SA015Engine.deriveKey(
+          levelProfile.algoId,
+          result.seedBytes
+        );
+        keyHex = SA015Engine.formatKey(saRes);
+      }
+
+      if (!keyHex) {
+        appendLog("Failed to calculate key.");
+        return;
+      }
+
+      appendLog(`Auto-unlock: sending key ${keyHex}...`);
+      const resp =
+        keyHex.length === 10
+          ? await serialService.sendKey5Byte(keyHex, normalizedLevel)
+          : await serialService.sendKey(keyHex, normalizedLevel);
+
+      appendLog(resp);
+      appendLog("SUCCESS: ECU Unlocked!");
+      securityManagerRef.recordSuccess(normalizedLevel);
+    } catch (e) {
+      if (
+        e &&
+        typeof e === "object" &&
+        "name" in e &&
+        (e as Error).name === "UDSNegativeResponseError" &&
+        "nrc" in e
+      ) {
+        securityManagerRef.recordFailure(
+          normalizedLevel,
+          (e as { nrc: number }).nrc
+        );
+      }
+      appendLog(`Auto-unlock failed: ${e instanceof Error ? e.message : e}`);
     }
   };
 
@@ -412,7 +619,7 @@ export function HardwareView({
             <div
               style={{
                 padding: "0.75rem",
-                background: "rgba(0,0,0,0.2)",
+                background: "rgba(255, 255, 255, 0.75)",
                 borderRadius: "6px",
                 color: "var(--text-secondary)",
                 fontSize: "0.9rem",
@@ -519,6 +726,41 @@ export function HardwareView({
                 </option>
               ))}
             </select>
+            {profileInfo && (
+              <div
+                style={{
+                  marginTop: "0.35rem",
+                  fontSize: "0.75rem",
+                  color: "var(--text-muted)",
+                }}
+              >
+                Profile: {profileInfo}
+              </div>
+            )}
+          </div>
+
+          <div className={styles.formGroup}>
+            <label>Security Level (hex, odd)</label>
+            <input
+              list="security-levels"
+              value={securityLevel}
+              onChange={(e) => setSecurityLevel(formatHex(e.target.value, 1))}
+              placeholder="01"
+              maxLength={2}
+            />
+            <datalist id="security-levels">
+              {Object.entries(SECURITY_LEVELS).map(([level, name]) => {
+                const hex = Number(level)
+                  .toString(16)
+                  .toUpperCase()
+                  .padStart(2, "0");
+                return (
+                  <option key={level} value={hex}>
+                    {hex} - {name}
+                  </option>
+                );
+              })}
+            </datalist>
           </div>
 
           <button
@@ -560,6 +802,14 @@ export function HardwareView({
               </button>
             </div>
           </div>
+
+          <button
+            className={styles.button}
+            onClick={handleAutoUnlock}
+            disabled={!isConnected || isScanning}
+          >
+            Auto Unlock (Profile)
+          </button>
         </div>
 
         {/* Advanced J2534 Settings */}

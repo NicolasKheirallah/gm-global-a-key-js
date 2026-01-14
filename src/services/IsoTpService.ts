@@ -178,8 +178,7 @@ export class IsoTpService {
     if (val <= 0x7f) {
       return val;
     } else if (val >= 0xf1 && val <= 0xf9) {
-      return val - 0xf0; // Returns ms? No, 0xF1 is 100us -> 0.1ms.
-      // JavaScript setTimeout is ms resolution. We'll round up to 1ms.
+      // 0xF1 is 100us -> 0.1ms; JS timers are ms resolution, round up to 1ms.
       return 1;
     }
     return 0; // Reserved/standard fallback

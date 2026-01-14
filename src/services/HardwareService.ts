@@ -13,9 +13,16 @@ export interface HardwareService {
   ): Promise<
     Record<string, { id: number; responses: string[]; timestamps: number[] }>
   >;
-  executeSeedRequest(header?: string): Promise<{ seed: string; log: string }>;
-  sendKey(key: string): Promise<string>;
-  sendKey5Byte(key: string): Promise<string>;
+  executeSeedRequest(
+    header?: string,
+    level?: number
+  ): Promise<{ seed: string; log: string; seedBytes?: Uint8Array }>;
+  sendKey(key: string, level?: number): Promise<string>;
+  sendKey5Byte(key: string, level?: number): Promise<string>;
+  requestSeed?(
+    level: number,
+    header?: string
+  ): Promise<{ seed: Uint8Array; response: string }>;
   setHandlers(handlers: SerialEventHandlers): void;
   listDevices?(): Promise<
     Array<{ name: string; vendor: string; dll_path: string }>

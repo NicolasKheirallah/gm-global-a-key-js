@@ -28,8 +28,7 @@
     font-size: 1rem;
     font-weight: 600;
     color: var(--text-primary);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.01em;
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -38,11 +37,10 @@
 .card h3::before {
     content: '';
     display: block;
-    width: 6px;
-    height: 6px;
+    width: 10px;
+    height: 2px;
     background: var(--accent-primary);
-    border-radius: 50%;
-    box-shadow: 0 0 8px var(--accent-primary);
+    border-radius: 2px;
 }
 
 /* Forms */
@@ -53,11 +51,10 @@
 .formGroup label {
     display: block;
     margin-bottom: 0.5rem;
-    font-size: 0.75rem;
-    font-weight: 600;
+    font-size: 0.8rem;
+    font-weight: 500;
     color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.02em;
 }
 
 .formGroup input, 
@@ -68,8 +65,8 @@
     border: 1px solid var(--border-glass);
     border-radius: var(--radius-md);
     font-size: 0.95rem;
-    font-family: 'JetBrains Mono', monospace;
-    background: rgba(15, 23, 42, 0.6);
+    font-family: var(--font-mono);
+    background: rgba(255, 255, 255, 0.9);
     color: var(--text-primary);
     transition: all 0.2s;
 }
@@ -79,8 +76,8 @@
 .formGroup textarea:focus {
     outline: none;
     border-color: var(--accent-primary);
-    background: rgba(15, 23, 42, 0.9);
-    box-shadow: 0 0 0 1px var(--accent-glow);
+    background: #ffffff;
+    box-shadow: 0 0 0 2px var(--accent-dim);
 }
 
 .formGroup input::placeholder {
@@ -100,10 +97,10 @@
 /* Buttons */
 .button {
     width: 100%;
-    padding: 0.875rem;
-    background: rgba(56, 189, 248, 0.1);
-    color: var(--accent-primary);
-    border: 1px solid rgba(56, 189, 248, 0.3);
+    padding: 0.85rem;
+    background: var(--accent-primary);
+    color: #ffffff;
+    border: 1px solid var(--accent-primary);
     border-radius: var(--radius-md);
     font-size: 0.9rem;
     font-weight: 600;
@@ -113,21 +110,19 @@
     align-items: center;
     justify-content: center;
     gap: 0.5rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-family: 'Outfit', sans-serif;
+    letter-spacing: 0.02em;
+    font-family: var(--font-sans);
 }
 
 .button:hover:not(:disabled) {
-    background: var(--accent-primary);
-    color: #0f172a; /* Dark text on bright button */
-    border-color: var(--accent-primary);
-    box-shadow: 0 0 15px var(--accent-glow);
+    background: #2a615d;
+    border-color: #2a615d;
+    box-shadow: 0 12px 24px var(--accent-glow);
     transform: translateY(-1px);
 }
 
 .button:disabled {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(28, 35, 33, 0.08);
     color: var(--text-muted);
     border-color: transparent;
     cursor: not-allowed;
@@ -135,19 +130,18 @@
 
 /* Specific button variants */
 .button.danger {
-    color: var(--status-error);
-    background: rgba(239, 68, 68, 0.1);
-    border-color: rgba(239, 68, 68, 0.3);
+    color: #ffffff;
+    background: var(--status-error);
+    border-color: var(--status-error);
 }
 .button.danger:hover {
-    background: var(--status-error);
-    color: white;
+    background: #b94747;
 }
 
 .button.warning {
-    color: var(--status-warning);
-    background: rgba(245, 158, 11, 0.1);
-    border-color: rgba(245, 158, 11, 0.3);
+    color: #ffffff;
+    background: var(--status-warning);
+    border-color: var(--status-warning);
 }
 
 /* Logs / Result Areas */
@@ -164,22 +158,21 @@
     color: var(--text-muted);
     margin-bottom: 0.5rem;
     display: block;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.03em;
 }
 
 .terminal {
     flex: 1;
-    background: #000000;
+    background: #f2f3ef;
     border: 1px solid var(--border-glass);
     border-radius: var(--radius-md);
     padding: 1rem;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 0.85rem;
     color: var(--text-primary);
     overflow-y: auto;
     white-space: pre-wrap;
-    box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.5);
+    box-shadow: inset 0 1px 8px rgba(18, 24, 22, 0.08);
 }
 
 /* Animations */
@@ -212,3 +205,79 @@
     width: auto;
     margin: 0;
 }
+
+.error {
+    background: rgba(201, 79, 79, 0.1);
+    border: 1px solid var(--status-error);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    color: var(--status-error);
+    font-size: 0.9rem;
+    margin-top: 1rem;
+}
+
+/* ==========================================
+   DARK MODE OVERRIDES  
+   ========================================== */
+
+/* Input Fields - Dark Mode */
+:global(.dark-mode) .formGroup input,
+:global(.dark-mode) .formGroup select,
+:global(.dark-mode) .formGroup textarea {
+    background: rgba(30, 40, 38, 0.8);
+    border-color: rgba(255, 255, 255, 0.1);
+    color: #e8edec;
+}
+
+:global(.dark-mode) .formGroup input:focus,
+:global(.dark-mode) .formGroup select:focus,
+:global(.dark-mode) .formGroup textarea:focus {
+    background: rgba(30, 40, 38, 0.95);
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px rgba(78, 205, 196, 0.2);
+}
+
+:global(.dark-mode) .formGroup input::placeholder {
+    color: rgba(168, 180, 177, 0.6);
+}
+
+/* Terminal / Result Areas - Dark Mode */
+:global(.dark-mode) .terminal,
+:global(.dark-mode) .logsContainer {
+    background: rgba(15, 20, 19, 0.9);
+    border-color: rgba(255, 255, 255, 0.08);
+    box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+/* Pre/Code blocks */
+:global(.dark-mode) .resultArea pre {
+    background: rgba(15, 20, 19, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    color: #e8edec;
+}
+
+/* Buttons - Dark Mode adjustments */
+:global(.dark-mode) .button:hover:not(:disabled) {
+    background: #3db8af;
+    border-color: #3db8af;
+}
+
+:global(.dark-mode) .button:disabled {
+    background: rgba(255, 255, 255, 0.05);
+    color: rgba(255, 255, 255, 0.3);
+    border-color: transparent;
+}
+
+/* Cards - enhance dark mode glass effect */
+:global(.dark-mode) .card {
+    background: rgba(26, 33, 32, 0.85);
+    border-color: rgba(255, 255, 255, 0.06);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+:global(.dark-mode) .card:hover {
+    border-color: rgba(78, 205, 196, 0.3);
+}
+
